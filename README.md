@@ -17,10 +17,8 @@ As área de preservação são:
 3.2. Pasta Áreas de Quilombolas_PA - Pasta contendo as bases de áreas quilombolas
 4. Dicionario_de_Dados_SICAR.pdf - PDF contendo o dicionário de dados da base de dados SIGEF/CAR
 # Bases de dados
-- CAR - SICAR
+- CAR - [SICAR](https://consultapublica.car.gov.br/publico/imoveis/index "SICAR")
 - Para download das áreas quilombolas acessar o [INCRA](https://certificacao.incra.gov.br/csv_shp/export_shp.py "INCRA")
 - Para download das áreas indígenas acessar o [FUNAI](https://www.gov.br/funai/pt-br/atuacao/terras-indigenas/geoprocessamento-e-mapas "FUNAI")
-- Para download das áreas de conservação [PDA](https://dados.gov.br/dados/conjuntos-dados/unidadesdeconservacao "PDA")
-- Para download das unidades de conservação, verificar no https://visualizador.inde.gov.br/# (aqui tem outras coisas interessantes também)
-- Para os limites do município eu prefiro pegar no projeto [geodata-br](https://github.com/tbrugz/geodata-br "geodata-br")
-- Peguei dados dos códigos do município no [IBGE](https://www.ibge.gov.br/explica/codigos-dos-municipios.php "IBGE")
+- Para download das Unidades de conservação [PDA](https://dados.gov.br/dados/conjuntos-dados/unidadesdeconservacao "PDA")
+- Para download dos alertas de fogo [mapbiomas](https://plataforma.alerta.mapbiomas.org/downloads "mapbiomas")
