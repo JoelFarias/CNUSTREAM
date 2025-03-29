@@ -37,8 +37,8 @@ def carregar_shapefile(caminho, calcular_percentuais=True):
     gdf = gdf.to_crs("EPSG:4326")
     return gdf
 
-gdf_cnuc = carregar_shapefile(r"C:\Users\joelc\Documents\Estágio\entrega-PA\entrega-PA\áreas-selecionadas\cnuc\cnuc.shp")
-gdf_sigef = carregar_shapefile(r"C:\Users\joelc\Documents\Estágio\entrega-PA\entrega-PA\áreas-selecionadas\sigef\sigef.shp", calcular_percentuais=False)
+gdf_cnuc = carregar_shapefile(r"cnuc.shp")
+gdf_sigef = carregar_shapefile(r"sigef.shp", calcular_percentuais=False)
 gdf_cnuc["base"] = "cnuc"
 gdf_sigef["base"] = "sigef"
 gdf_sigef = gdf_sigef.rename(columns={"id": "id_sigef"})
@@ -53,7 +53,7 @@ def load_csv(caminho):
     df["total_ocorrencias"] = df[colunas_ocorrencias].sum(axis=1)
     return df
 
-df_csv = load_csv(r"C:\Users\joelc\Documents\Estágio\cnu\CPT-PA-count.csv")
+df_csv = load_csv(r"CPT-PA-count.csv")
 
 @st.cache_data
 def carregar_dados_conflitos_municipio(arquivo_excel):
@@ -67,7 +67,7 @@ def carregar_dados_conflitos_municipio(arquivo_excel):
     df_conflitos.columns = ['Município', 'Total_Famílias', 'Número_Conflitos']
     return df_conflitos
 
-df_conflitos_municipio = carregar_dados_conflitos_municipio(r"C:\Users\joelc\Documents\Estágio\entrega-PA\entrega-PA\áreas-selecionadas\CPTF-PA.xlsx")
+df_conflitos_municipio = carregar_dados_conflitos_municipio(r"CPTF-PA.xlsx")
 
 def criar_figura(ids_selecionados, invadindo_opcao):
     fig = px.choropleth_mapbox(
