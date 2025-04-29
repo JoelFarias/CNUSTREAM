@@ -870,7 +870,7 @@ if invadindo_opcao and invadindo_opcao.lower() != "todos":
 else:
     ids_selecionados = []
 
-caminho_fogo = r"C:\Users\joelc\Downloads\Areas_de_interesse_ordenado.csv"
+caminho_fogo = r"Areas_de_interesse_ordenado.csv"
 df_fogo = carregar_dados_fogo(caminho_fogo, sep=';', encoding='latin1')
 figs_fogo = criar_figuras_fogo(df_fogo)
 
