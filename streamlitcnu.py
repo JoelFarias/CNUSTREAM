@@ -1478,16 +1478,16 @@ DB_CONFIG = {
 CHUNK_SIZE = 15000 
 MEMORY_THRESHOLD = 85  
 
-class DatabaseManager:
+class GerenciarBancoDados:
     def __init__(self):
         self._engine = None
-        self._connection_string = self._build_connection_string()
-    
-    def _build_connection_string(self) -> str:
+        self._connection_string = self.construir_conx_string()
+
+    def construir_conx_string(self) -> str:
         return (f"postgresql://{DB_CONFIG['user']}:{DB_CONFIG['password']}"
                 f"@{DB_CONFIG['host']}:{DB_CONFIG['port']}/{DB_CONFIG['database']}")
     
-    def get_engine(self):
+    def pegar_engine(self):
         if self._engine is None:
             try:
                 self._engine = create_engine(
@@ -1502,15 +1502,15 @@ class DatabaseManager:
                 return None
         return self._engine
     
-    def dispose(self):
+    def descartar(self):
         if self._engine:
             self._engine.dispose()
             self._engine = None
 
-class DataProcessor:
-    
+class processarDadosINPE:
+
     def __init__(self):
-        self.db_manager = DatabaseManager()
+        self.db_manager = GerenciarBancoDados()
         self._base_filters = [
             "riscofogo BETWEEN 0 AND 1",
             "precipitacao >= 0",
@@ -1518,11 +1518,11 @@ class DataProcessor:
             "latitude BETWEEN -15 AND 5",
             "longitude BETWEEN -60 AND -45"
         ]
-    
-    def _check_memory_usage(self) -> bool:
+
+    def verificar_uso_memoria(self) -> bool:
         return psutil.virtual_memory().percent < MEMORY_THRESHOLD
-    
-    def _optimize_dataframe(self, df: pd.DataFrame) -> pd.DataFrame:
+
+    def _otimizar_dataframe(self, df: pd.DataFrame) -> pd.DataFrame:
         if df.empty:
             return df
         
@@ -1540,8 +1540,8 @@ class DataProcessor:
                 df[col] = df[col].astype('category')
         
         return df
-    
-    def _get_row_count(self, engine, where_clause: str) -> int:
+
+    def pegar_contagem_linhas(self, engine, where_clause: str) -> int:
         try:
             count_query = text(f"""
                 SELECT COUNT(*) 
@@ -1554,8 +1554,8 @@ class DataProcessor:
                 return result.scalar() or 0
         except Exception:
             return 0
-    
-    def _build_base_query(self) -> str:
+
+    def construir_consulta_base(self) -> str:
         return f"""
             SELECT
                 datahora,
@@ -1567,16 +1567,16 @@ class DataProcessor:
                 longitude
             FROM "{DB_CONFIG['schema']}"."{DB_CONFIG['table']}"
         """
-    
-    def _load_data_chunks(self, engine, base_query: str, where_clause: str, 
-                         total_rows: int) -> Optional[pd.DataFrame]:
+
+    def carregar_dados(self, engine, base_query: str, where_clause: str,
+                       total_rows: int) -> Optional[pd.DataFrame]:
         chunks = []
         
         try:
             for offset in range(0, total_rows, CHUNK_SIZE):
-                if not self._check_memory_usage():
+                if not self.verificar_uso_memoria():
                     gc.collect()
-                    if not self._check_memory_usage():
+                    if not self.verificar_uso_memoria():
                         break
                 
                 chunk_query = text(f"""
@@ -1602,8 +1602,8 @@ class DataProcessor:
             pass
         
         return None
-    
-    def load_inpe_data(self, year: Optional[int] = None) -> Optional[pd.DataFrame]:
+
+    def carregar_dados_inpe(self, year: Optional[int] = None) -> Optional[pd.DataFrame]:
         engine = self.db_manager.get_engine()
         if not engine:
             return None
@@ -1613,19 +1613,19 @@ class DataProcessor:
             if year is not None:
                 filters.append(f"EXTRACT(YEAR FROM datahora) = {year}")
             where_clause = " AND ".join(filters)
-            
-            total_rows = self._get_row_count(engine, where_clause)
+
+            total_rows = self.pegar_contagem_linhas(engine, where_clause)
             if total_rows == 0:
                 return pd.DataFrame()
-            
-            base_query = self._build_base_query()
-            
+
+            base_query = self.construir_consulta_base()
+
             if total_rows <= CHUNK_SIZE:
                 query = text(f"{base_query} WHERE {where_clause}")
                 df = pd.read_sql(query, engine, parse_dates=['datahora'])
             else:
-                df = self._load_data_chunks(engine, base_query, where_clause, total_rows)
-            
+                df = self.carregar_dados(engine, base_query, where_clause, total_rows)
+
             if df is None or df.empty:
                 return pd.DataFrame()
             
@@ -1638,8 +1638,8 @@ class DataProcessor:
                 'latitude': 'Latitude',
                 'longitude': 'Longitude'
             })
-            
-            df = self._optimize_dataframe(df)
+
+            df = self._otimizar_dataframe(df)
             df = df.dropna(subset=['DataHora', 'mun_corrigido'])
             
             gc.collect()
@@ -1648,10 +1648,10 @@ class DataProcessor:
         except Exception:
             return None
         finally:
-            self.db_manager.dispose()
-    
-    def get_available_years(self) -> List[int]:
-        engine = self.db_manager.get_engine()
+            self.db_manager.descartar()
+
+    def pegar_anos_disponiveis(self) -> List[int]:
+        engine = self.db_manager.pegar_engine()
         if not engine:
             return []
         
@@ -1672,12 +1672,12 @@ class DataProcessor:
         except Exception:
             return []
         finally:
-            self.db_manager.dispose()
+            self.db_manager.descartar()
 
-class RankingProcessor:
+class processarRanking:
     
     @staticmethod
-    def _process_chunk_aggregation(chunk: pd.DataFrame, theme: str) -> pd.DataFrame:
+    def processar_chunk(chunk: pd.DataFrame, theme: str) -> pd.DataFrame:
         chunk_clean = chunk.dropna(subset=['mun_corrigido']).copy()
         
         agg_configs = {
@@ -1701,7 +1701,7 @@ class RankingProcessor:
         return pd.DataFrame()
     
     @staticmethod
-    def _combine_chunk_results(results: List[pd.DataFrame], theme: str) -> pd.DataFrame:
+    def combinar_resultados(results: List[pd.DataFrame], theme: str) -> pd.DataFrame:
         if not results:
             return pd.DataFrame()
         
@@ -1736,21 +1736,21 @@ class RankingProcessor:
         return pd.DataFrame()
     
     @staticmethod
-    def _format_ranking_result(df_agg: pd.DataFrame, theme: str) -> Tuple[pd.DataFrame, str]:
+    def resultado_ranking(df_agg: pd.DataFrame, theme: str) -> Tuple[pd.DataFrame, str]:
         if df_agg.empty:
             return pd.DataFrame(), ''
         
         formatters = {
             "Maior Risco de Fogo": (
-                RankingProcessor._format_fire_risk_ranking,
+                processarRanking._format_fire_risk_ranking,
                 'Risco Médio'
             ),
             "Maior Precipitação (evento)": (
-                RankingProcessor._format_precipitation_ranking,
+                processarRanking._format_precipitation_ranking,
                 'Precipitação Máxima (mm)'
             ),
             "Máx. Dias Sem Chuva": (
-                RankingProcessor._format_dry_days_ranking,
+                processarRanking._format_dry_days_ranking,
                 'Máx. Dias Sem Chuva'
             )
         }
@@ -1767,7 +1767,7 @@ class RankingProcessor:
         return pd.DataFrame(), ''
     
     @staticmethod
-    def _format_fire_risk_ranking(df_agg: pd.DataFrame) -> pd.DataFrame:
+    def risco_fogo_ranking(df_agg: pd.DataFrame) -> pd.DataFrame:
         df_agg = df_agg.round(4)
         df_rank = df_agg.nlargest(20, ('RiscoFogo', 'mean')).reset_index()
         
@@ -1780,8 +1780,7 @@ class RankingProcessor:
         return df_rank
     
     @staticmethod
-    def _format_precipitation_ranking(df_agg: pd.DataFrame) -> pd.DataFrame:
-        """Formata ranking de precipitação"""
+    def precipitação_ranking(df_agg: pd.DataFrame) -> pd.DataFrame:
         df_agg = df_agg.round(2)
         df_rank = df_agg.nlargest(20, ('Precipitacao', 'max')).reset_index()
         
@@ -1795,7 +1794,7 @@ class RankingProcessor:
         return df_rank
     
     @staticmethod
-    def _format_dry_days_ranking(df_agg: pd.DataFrame) -> pd.DataFrame:
+    def dias_sem_chuva_ranking(df_agg: pd.DataFrame) -> pd.DataFrame:
         df_agg = df_agg.round(1)
         df_rank = df_agg.nlargest(20, ('DiaSemChuva', 'max')).reset_index()
         
@@ -1806,8 +1805,8 @@ class RankingProcessor:
         df_rank['Última Ocorrência'] = pd.to_datetime(df_rank['Última Ocorrência']).dt.strftime('%d/%m/%Y')
         
         return df_rank
-    
-    def process_ranking(self, df: pd.DataFrame, theme: str, period: str) -> Tuple[pd.DataFrame, str]:
+
+    def processar_ranking(self, df: pd.DataFrame, theme: str, period: str) -> Tuple[pd.DataFrame, str]:
         if df is None or df.empty:
             return pd.DataFrame(), ''
         
@@ -1817,21 +1816,21 @@ class RankingProcessor:
                 results = []
                 
                 for chunk in chunks:
-                    chunk_result = self._process_chunk_aggregation(chunk, theme)
+                    chunk_result = self.processar_chunk(chunk, theme)
                     if not chunk_result.empty:
                         results.append(chunk_result)
                     
                     del chunk
                     gc.collect()
-                
-                df_agg = self._combine_chunk_results(results, theme)
+
+                df_agg = self.combinar_resultados(results, theme)
                 del results
                 gc.collect()
             else:
-                df_agg = self._process_chunk_aggregation(df, theme)
-            
-            df_rank, col_ord = self._format_ranking_result(df_agg, theme)
-            
+                df_agg = self.processar_chunk(df, theme)
+
+            df_rank, col_ord = self.resultado_ranking(df_agg, theme)
+
             del df_agg
             gc.collect()
             
@@ -1841,49 +1840,49 @@ class RankingProcessor:
             return pd.DataFrame(), ''
 
 @st.cache_data(ttl=1800, show_spinner=False, max_entries=2)  
-def get_cached_data(year: Optional[int] = None) -> Optional[pd.DataFrame]:
-    processor = DataProcessor()
-    return processor.load_inpe_data(year)
+def pegar_cache_dados(year: Optional[int] = None) -> Optional[pd.DataFrame]:
+    processor = processarDadosINPE()
+    return processor.carregar_dados_inpe(year)
 
 @st.cache_data(ttl=3600, show_spinner=False, max_entries=1) 
-def get_available_years() -> List[int]:
-    processor = DataProcessor()
-    return processor.get_available_years()
+def pegar_anos_disponiveis() -> List[int]:
+    processor = processarDadosINPE()
+    return processor.pegar_anos_disponiveis()
 
 @st.cache_data(ttl=900, show_spinner=False, max_entries=3) 
-def get_cached_ranking(df_hash: str, theme: str, period: str) -> Tuple[pd.DataFrame, str]:
+def pegar_cache_ranking(df_hash: str, theme: str, period: str) -> Tuple[pd.DataFrame, str]:
     parts = df_hash.split('_')
     if len(parts) >= 2:
         year_option = parts[0]
         
         if year_option == "Todos":
-            df = get_cached_data(None)
+            df = pegar_cache_dados(None)
         else:
             try:
                 year = int(year_option)
-                df = get_cached_data(year)
+                df = pegar_cache_dados(year)
             except ValueError:
-                df = get_cached_data(None)
+                df = pegar_cache_dados(None)
     else:
-        df = get_cached_data(None)
-    
+        df = pegar_cache_dados(None)
+
     if df is None:
         return pd.DataFrame(), ''
-    
-    processor = RankingProcessor()
-    return processor.process_ranking(df, theme, period)
 
-def initialize_data() -> Tuple[List[str], pd.DataFrame]:
+    processor = processarRanking()
+    return processor.processar_ranking(df, theme, period)
+
+def inicializar_dados() -> Tuple[List[str], pd.DataFrame]:
     try:
-        years = get_available_years()
+        years = pegar_anos_disponiveis()
         year_options = ["Todos os Anos"] + [str(year) for year in years]
-        base_df = get_cached_data(None)
-        
+        base_df = pegar_cache_dados(None)
+
         return year_options, base_df if base_df is not None else pd.DataFrame()
     except Exception:
         return ["Todos os Anos"], pd.DataFrame()
 
-def get_year_data(year_option: str, base_df: pd.DataFrame) -> pd.DataFrame:
+def pegar_dados_por_ano(year_option: str, base_df: pd.DataFrame) -> pd.DataFrame:
     if base_df.empty:
         return pd.DataFrame()
     
@@ -1896,9 +1895,9 @@ def get_year_data(year_option: str, base_df: pd.DataFrame) -> pd.DataFrame:
         except (ValueError, KeyError):
             return pd.DataFrame()
 
-def render_interface():
-    YEAR_OPTIONS, DF_BASE = initialize_data()
-    
+def renderizar_interface():
+    YEAR_OPTIONS, DF_BASE = inicializar_dados()
+
     if DF_BASE.empty:
         st.error("Dados não disponíveis.")
         return
@@ -1912,8 +1911,8 @@ def render_interface():
         key="ano_focos_calor"
     )
 
-    df_year = get_year_data(ano_sel, DF_BASE)
-    
+    df_year = pegar_dados_por_ano(ano_sel, DF_BASE)
+
     if df_year.empty:
         st.warning(f"Sem dados para {ano_sel}")
         return
@@ -1929,8 +1928,8 @@ def render_interface():
         )
     df_hash = f"{ano_sel}_{len(df_year)}_{tema_rank}"
     periodo = "Todo o Período" if ano_sel == "Todos os Anos" else f"Ano {ano_sel}"
-    df_rank, col_ord = get_cached_ranking(df_hash, tema_rank, periodo)
-    
+    df_rank, col_ord = pegar_cache_ranking(df_hash, tema_rank, periodo)
+
     if not df_rank.empty:
         st.dataframe(df_rank, use_container_width=True, hide_index=True)
     else:
@@ -2624,8 +2623,8 @@ with tabs[3]:
             unsafe_allow_html=True
         )
 
-    YEAR_OPTIONS, DF_BASE = initialize_data()
-    
+    YEAR_OPTIONS, DF_BASE = inicializar_dados()
+
     if DF_BASE is not None and not DF_BASE.empty:
         ano_sel_graf = st.selectbox(
             'Período para gráficos:',
@@ -2633,9 +2632,9 @@ with tabs[3]:
             index=0, 
             key="ano_focos_calor_global_tab3"
         )
-        
-        df_graf = get_year_data(ano_sel_graf, DF_BASE)
-        
+
+        df_graf = pegar_dados_por_ano(ano_sel_graf, DF_BASE)
+
         ano_param = None if ano_sel_graf == "Todos os Anos" else int(ano_sel_graf)
         display_graf = ("todo o período histórico" if ano_param is None else f"o ano de {ano_param}")
 
@@ -2680,11 +2679,11 @@ with tabs[3]:
         periodo_rank = ("Todo o Período Histórico" if ano_rank_param is None else f"Ano de {ano_rank_param}")
 
         st.subheader(f"Ranking por {tema_rank} ({periodo_rank})")
-        
-        rank_hash = f"{ano_sel_rank}_{tema_rank}_{len(get_year_data(ano_sel_rank, DF_BASE))}"
-        
-        df_rank, col_ord = get_cached_ranking(rank_hash, tema_rank, periodo_rank)
-        
+
+        rank_hash = f"{ano_sel_rank}_{tema_rank}_{len(pegar_dados_por_ano(ano_sel_rank, DF_BASE))}"
+
+        df_rank, col_ord = pegar_cache_ranking(rank_hash, tema_rank, periodo_rank)
+
         if df_rank is not None and not df_rank.empty:
             st.dataframe(df_rank, use_container_width=True, hide_index=True)
         else:
