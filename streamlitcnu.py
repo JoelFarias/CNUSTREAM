@@ -186,9 +186,8 @@ def _patched_px_bar(*args, **kwargs) -> go.Figure:
 
 px.bar = _patched_px_bar
 
-@st.cache_data
+@st.cache_data(persist="disk")
 def carregar_shapefile(caminho: str, calcular_percentuais: bool = True, columns: list[str] = None) -> gpd.GeoDataFrame:
-    """Carrega um shapefile, calcula áreas e percentuais, e otimiza tipos de dados."""
     gdf = gpd.read_file(caminho, columns=columns or [])
     
     gdf["geometry"] = gdf["geometry"].apply(lambda geom: geom.buffer(0) if geom and not geom.is_valid else geom)
@@ -247,7 +246,7 @@ def preparar_hectares(gdf: gpd.GeoDataFrame) -> gpd.GeoDataFrame:
 
     return gdf2
 
-@st.cache_data
+@st.cache_data(persist="disk")
 def load_csv(uploaded_file, columns: list[str] = None) -> pd.DataFrame:
     usecols_arg = None
     if columns is not None:
@@ -305,7 +304,7 @@ def load_csv(uploaded_file, columns: list[str] = None) -> pd.DataFrame:
                     pass
     return df
     
-@st.cache_data
+@st.cache_data(persist="disk")
 def carregar_dados_conflitos_municipio(arquivo_excel: str) -> pd.DataFrame:
     try:
         df = pd.read_excel(arquivo_excel, sheet_name='Áreas em Conflito', usecols=['mun', 'Famílias', 'Nome do Conflito']).dropna(how='all')
@@ -1521,7 +1520,6 @@ class DataProcessor:
         ]
     
     def _check_memory_usage(self) -> bool:
-        """Verifica uso de memória"""
         return psutil.virtual_memory().percent < MEMORY_THRESHOLD
     
     def _optimize_dataframe(self, df: pd.DataFrame) -> pd.DataFrame:
@@ -1842,17 +1840,17 @@ class RankingProcessor:
         except Exception:
             return pd.DataFrame(), ''
 
-@st.cache_data(ttl=3600, show_spinner=False, max_entries=3)
+@st.cache_data(ttl=1800, show_spinner=False, max_entries=2)  
 def get_cached_data(year: Optional[int] = None) -> Optional[pd.DataFrame]:
     processor = DataProcessor()
     return processor.load_inpe_data(year)
 
-@st.cache_data(ttl=3600, show_spinner=False, max_entries=1)
+@st.cache_data(ttl=3600, show_spinner=False, max_entries=1) 
 def get_available_years() -> List[int]:
     processor = DataProcessor()
     return processor.get_available_years()
 
-@st.cache_data(ttl=1800, show_spinner=False, max_entries=5)
+@st.cache_data(ttl=900, show_spinner=False, max_entries=3) 
 def get_cached_ranking(df_hash: str, theme: str, period: str) -> Tuple[pd.DataFrame, str]:
     parts = df_hash.split('_')
     if len(parts) >= 2:
@@ -1989,7 +1987,7 @@ df_confmun_raw = carregar_dados_conflitos_municipio(
     r"CPTF-PA.xlsx"
 )
 
-@st.cache_data
+@st.cache_data(persist="disk")
 def load_df_proc(caminho: str, columns: list[str]) -> pd.DataFrame:
     df = pd.read_csv(caminho, sep=";", encoding="windows-1252", usecols=columns)
     for col in df.columns:
