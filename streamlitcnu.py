@@ -193,18 +193,32 @@ def carregar_shapefile(caminho: str, calcular_percentuais: bool = True, columns:
     gdf["geometry"] = gdf["geometry"].apply(lambda geom: geom.buffer(0) if geom and not geom.is_valid else geom)
     gdf = gdf[gdf["geometry"].notnull() & gdf["geometry"].is_valid]
     
+    gdf_original_crs = gdf.crs # Store original CRS
+
     if "area_km2" in gdf.columns or calcular_percentuais:
         try:
+            # Project to a suitable CRS for area calculation and simplification (e.g., UTM)
             gdf_proj = gdf.to_crs("EPSG:31983") 
-            gdf_proj["area_calc_km2"] = gdf_proj.geometry.area / 1e6
+            
+            # Simplify geometry in the projected CRS
+            # Tolerance of 10 (meters for EPSG:31983) is a starting point.
+            gdf_proj.geometry = gdf_proj.geometry.simplify(tolerance=10, preserve_topology=True) 
+            
+            gdf_proj["area_calc_km2"] = gdf_proj.geometry.area / 1e6 # Calculate area with simplified geom
+            
+            # Update the original gdf (still in original CRS) with simplified geometries projected back
+            gdf.geometry = gdf_proj.to_crs(gdf_original_crs).geometry
+
             if "area_km2" in gdf.columns:
+                # Use calculated area from simplified_proj_geom if area_km2 is missing/zero
                 gdf["area_km2"] = gdf["area_km2"].replace(0, np.nan).fillna(gdf_proj["area_calc_km2"])
             else:
                 gdf["area_km2"] = gdf_proj["area_calc_km2"]
+
         except Exception as e:
-            st.warning(f"Could not reproject for area calculation: {e}. Using existing 'area_km2' or skipping area calcs.")
+            st.warning(f"Could not reproject/simplify for area calculation: {e}. Using existing 'area_km2' or skipping area calcs.")
             if "area_km2" not in gdf.columns:
-                 gdf["area_km2"] = np.nan 
+                 gdf["area_km2"] = np.nan
 
     if calcular_percentuais and "area_km2" in gdf.columns:
         gdf["perc_alerta"] = (gdf.get("alerta_km2", 0) / gdf["area_km2"]) * 100
@@ -228,8 +242,10 @@ def carregar_shapefile(caminho: str, calcular_percentuais: bool = True, columns:
                     gdf[col] = gdf[col].astype('category')
                  except Exception:
                     pass 
-
-    return gdf.to_crs("EPSG:4326")
+    
+    result_gdf = gdf.to_crs("EPSG:4326")
+    gc.collect()
+    return result_gdf
 
 def preparar_hectares(gdf: gpd.GeoDataFrame) -> gpd.GeoDataFrame:
     """Adiciona colunas em hectares ao GeoDataFrame."""
@@ -302,6 +318,7 @@ def load_csv(uploaded_file, columns: list[str] = None) -> pd.DataFrame:
                     df[col] = df[col].astype('category')
                 except Exception:
                     pass
+    gc.collect()
     return df
     
 @st.cache_data(persist="disk")
@@ -365,7 +382,7 @@ def carregar_dados_conflitos_municipio(arquivo_excel: str) -> pd.DataFrame:
             res['Município'] = res['Município'].astype('category')
         except Exception:
             pass
-
+    gc.collect()
     return res
 
 def criar_figura(gdf_cnuc_filtered, gdf_sigef_filtered, df_csv_filtered, centro, ids_selecionados, invadindo_opcao):
@@ -1324,30 +1341,41 @@ def fig_desmatamento_temporal(gdf_alertas_filtered: gpd.GeoDataFrame) -> go.Figu
 
 def fig_desmatamento_municipio(gdf_alertas_filtered: gpd.GeoDataFrame) -> go.Figure:
     """Cria um gráfico de barras mostrando a área total de alertas de desmatamento por município."""
-    df = gdf_alertas_filtered.sort_values('AREAHA', ascending=False)
-    if df.empty:
+    if gdf_alertas_filtered.empty or 'MUNICIPIO' not in gdf_alertas_filtered.columns or 'AREAHA' not in gdf_alertas_filtered.columns:
+        return go.Figure() # Return empty figure if essential columns are missing
+
+    # Ensure AREAHA is numeric
+    gdf_alertas_filtered['AREAHA'] = pd.to_numeric(gdf_alertas_filtered['AREAHA'], errors='coerce').fillna(0)
+
+    df_agg = gdf_alertas_filtered.groupby('MUNICIPIO', observed=False)['AREAHA'].sum().reset_index()
+    df_agg = df_agg.sort_values('AREAHA', ascending=False)
+   
+    # Limit to top N municipalities if it's too crowded, e.g., top 30
+    # df_agg = df_agg.head(30) # Optional: if the list is too long
+
+    if df_agg.empty: # Check if aggregation resulted in an empty DataFrame
         return go.Figure()
 
     fig = px.bar(
-        df,
+        df_agg, # Use aggregated data
         x='AREAHA',
         y='MUNICIPIO',
         orientation='h',
         text='AREAHA',
-        labels={'AREAHA': 'Área (ha)', 'MUNICIPIO': ''}
+        labels={'AREAHA': 'Área Total Desmatada (ha)', 'MUNICIPIO': 'Município'} # Updated labels
     )
-    fig = _apply_layout(fig, title="Desmatamento por Município")
+    fig = _apply_layout(fig, title="Desmatamento Total por Município") # Updated title
 
     fig.update_layout(
-        yaxis=dict(autorange="reversed"),
+        yaxis=dict(autorange="reversed"), # Keep if you want largest bar on top
         xaxis=dict(
-            tickformat=',d'                 
+            tickformat=',.0f' # Format as integer or with fewer decimals if preferred
         ),
-        margin=dict(l=80, r=100, t=50, b=20) 
+        margin=dict(l=150, r=40, t=50, b=20) # Adjust margins if y-axis labels are long
     )
 
     fig.update_traces(
-        texttemplate='%{text:.0f}',
+        texttemplate='%{text:,.0f}', # Format text on bars
         textposition='outside',
         cliponaxis=False,                 
         marker_line_color='rgb(80,80,80)',
@@ -1539,6 +1567,7 @@ class processarDadosINPE:
             if col != 'DataHora' and df[col].nunique() / len(df) < 0.4:
                 df[col] = df[col].astype('category')
         
+        gc.collect()
         return df
 
     def pegar_contagem_linhas(self, engine, where_clause: str) -> int:
@@ -1642,13 +1671,16 @@ class processarDadosINPE:
             df = self._otimizar_dataframe(df)
             df = df.dropna(subset=['DataHora', 'mun_corrigido'])
             
-            gc.collect()
+            gc.collect() # Collect after processing df
             return df
             
         except Exception:
-            return None
+            # Log error (st.error or logging could be added here if not present)
+            gc.collect() # Collect even on exception
+            return None # Or pd.DataFrame()
         finally:
             self.db_manager.descartar()
+            gc.collect() # Ensure collection after engine disposal
 
     def pegar_anos_disponiveis(self) -> List[int]:
         engine = self.db_manager.pegar_engine()
@@ -1667,12 +1699,15 @@ class processarDadosINPE:
                 result = conn.execute(query)
                 years = [int(row[0]) for row in result.fetchall() if row[0] is not None]
             
+            gc.collect()
             return years
             
         except Exception:
+            gc.collect()
             return []
         finally:
             self.db_manager.descartar()
+            gc.collect()
 
 class processarRanking:
     
@@ -1839,7 +1874,7 @@ class processarRanking:
         except Exception:
             return pd.DataFrame(), ''
 
-@st.cache_data(ttl=1800, show_spinner=False, max_entries=2)  
+@st.cache_data(ttl=1800, show_spinner=False, max_entries=3)  
 def pegar_cache_dados(year: Optional[int] = None) -> Optional[pd.DataFrame]:
     processor = processarDadosINPE()
     return processor.carregar_dados_inpe(year)
@@ -1874,31 +1909,56 @@ def pegar_cache_ranking(df_hash: str, theme: str, period: str) -> Tuple[pd.DataF
 
 def inicializar_dados() -> Tuple[List[str], pd.DataFrame]:
     try:
-        years = pegar_anos_disponiveis()
-        year_options = ["Todos os Anos"] + [str(year) for year in years]
-        base_df = pegar_cache_dados(None)
+        years = pegar_anos_disponiveis() # Already called
+        year_options = ["Todos os Anos"] + [str(year) for year in years] # Already there
+
+        most_recent_year = None
+        if years:
+            most_recent_year = max(years) # Determine most recent year
+
+        # Load only the most recent year by default, or None if no years
+        base_df = pegar_cache_dados(most_recent_year) 
 
         return year_options, base_df if base_df is not None else pd.DataFrame()
     except Exception:
+        # Log error
         return ["Todos os Anos"], pd.DataFrame()
 
-def pegar_dados_por_ano(year_option: str, base_df: pd.DataFrame) -> pd.DataFrame:
-    if base_df.empty:
-        return pd.DataFrame()
-    
+def pegar_dados_por_ano(year_option: str, current_df_base: pd.DataFrame) -> pd.DataFrame: # current_df_base is the initially loaded (e.g. most recent year)
     if year_option == "Todos os Anos":
-        return base_df
+        # User selected "Todos os Anos", so fetch all data
+        return pegar_cache_dados(None) 
     else:
         try:
             year = int(year_option)
-            return base_df[base_df['DataHora'].dt.year == year].copy()
+            # Check if current_df_base contains the selected year
+            # This check is a bit tricky as current_df_base might be empty or from a different year.
+            # It's simpler to just re-fetch if the selected year isn't the one current_df_base represents.
+            # A more robust check would be to see if current_df_base has data and its year matches.
+            
+            # Get the year from current_df_base if it's not empty
+            year_in_base_df = None
+            if not current_df_base.empty and 'DataHora' in current_df_base.columns:
+                # Ensure 'DataHora' is datetime
+                if not pd.api.types.is_datetime64_any_dtype(current_df_base['DataHora']):
+                    current_df_base['DataHora'] = pd.to_datetime(current_df_base['DataHora'], errors='coerce')
+                
+                if not current_df_base.empty and not current_df_base['DataHora'].dropna().empty :
+                    year_in_base_df = current_df_base['DataHora'].dropna().iloc[0].year
+
+            if year == year_in_base_df: # If selected year is already in DF_BASE
+                return current_df_base
+            else:
+                # Fetch data for the specifically selected year
+                return pegar_cache_dados(year)
         except (ValueError, KeyError):
+            # Log error or handle
             return pd.DataFrame()
 
 def renderizar_interface():
     YEAR_OPTIONS, DF_BASE = inicializar_dados()
 
-    if DF_BASE.empty:
+    if DF_BASE is None or DF_BASE.empty:
         st.error("Dados não disponíveis.")
         return
     
@@ -1982,9 +2042,7 @@ df_csv_raw = load_csv(
     r"CPT-PA-count.csv", 
     columns=df_csv_cols
 )
-df_confmun_raw = carregar_dados_conflitos_municipio(
-    r"CPTF-PA.xlsx"
-)
+# df_confmun_raw will be loaded inside Tab 1 (CPT)
 
 @st.cache_data(persist="disk")
 def load_df_proc(caminho: str, columns: list[str]) -> pd.DataFrame:
@@ -2000,12 +2058,10 @@ def load_df_proc(caminho: str, columns: list[str]) -> pd.DataFrame:
                     df[col] = df[col].astype('category')
                  except Exception:
                     pass
+    gc.collect()
     return df
 
-df_proc_raw    = load_df_proc(
-    r"processos_tjpa_completo_atualizada_pronto.csv",
-    columns=df_proc_cols
-)
+# df_proc_raw will be loaded inside Tab 2 (Justiça)
 
 tabs = st.tabs(["Sobreposições", "CPT", "Justiça", "Queimadas", "Desmatamento"])
 
@@ -2189,9 +2245,13 @@ with tabs[1]:
             unsafe_allow_html=True
         )
 
+    # Load df_confmun_raw here as it's specific to this tab
+    df_confmun_raw = carregar_dados_conflitos_municipio(
+        r"CPTF-PA.xlsx"
+    )
     df_tabela_social = df_confmun_raw.copy()
 
-    df_csv_cleaned = df_csv_raw.copy()
+    df_csv_cleaned = df_csv_raw.copy() # df_csv_raw is loaded globally
     if 'Município' in df_csv_cleaned.columns:
         df_csv_cleaned['Município'] = df_csv_cleaned['Município'].apply(lambda x: str(x).strip().title() if pd.notna(x) else None)
 
@@ -2336,6 +2396,12 @@ with tabs[2]:
         unsafe_allow_html=True
     )
     
+    # Load df_proc_raw here as it's specific to this tab
+    df_proc_raw = load_df_proc(
+        r"processos_tjpa_completo_atualizada_pronto.csv",
+        columns=df_proc_cols
+    )
+
     if 'data_ajuizamento' in df_proc_raw.columns:
         df_proc_raw['data_ajuizamento'] = pd.to_datetime(df_proc_raw['data_ajuizamento'], errors='coerce')
     if 'ultima_atualizaçao' in df_proc_raw.columns:
