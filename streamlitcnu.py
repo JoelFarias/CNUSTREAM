@@ -193,18 +193,32 @@ def carregar_shapefile(caminho: str, calcular_percentuais: bool = True, columns:
     gdf["geometry"] = gdf["geometry"].apply(lambda geom: geom.buffer(0) if geom and not geom.is_valid else geom)
     gdf = gdf[gdf["geometry"].notnull() & gdf["geometry"].is_valid]
     
+    gdf_original_crs = gdf.crs # Store original CRS
+
     if "area_km2" in gdf.columns or calcular_percentuais:
         try:
+            # Project to a suitable CRS for area calculation and simplification (e.g., UTM)
             gdf_proj = gdf.to_crs("EPSG:31983") 
-            gdf_proj["area_calc_km2"] = gdf_proj.geometry.area / 1e6
+
+            # Simplify geometry in the projected CRS
+            # Tolerance of 10 (meters for EPSG:31983) is a starting point.
+            gdf_proj.geometry = gdf_proj.geometry.simplify(tolerance=10, preserve_topology=True)
+
+            gdf_proj["area_calc_km2"] = gdf_proj.geometry.area / 1e6 # Calculate area with simplified geom
+
+            # Update the original gdf (still in original CRS) with simplified geometries projected back
+            gdf.geometry = gdf_proj.to_crs(gdf_original_crs).geometry
+
             if "area_km2" in gdf.columns:
+                # Use calculated area from simplified_proj_geom if area_km2 is missing/zero
                 gdf["area_km2"] = gdf["area_km2"].replace(0, np.nan).fillna(gdf_proj["area_calc_km2"])
             else:
                 gdf["area_km2"] = gdf_proj["area_calc_km2"]
+
         except Exception as e:
-            st.warning(f"Could not reproject for area calculation: {e}. Using existing 'area_km2' or skipping area calcs.")
+            st.warning(f"Could not reproject/simplify for area calculation: {e}. Using existing 'area_km2' or skipping area calcs.")
             if "area_km2" not in gdf.columns:
-                 gdf["area_km2"] = np.nan 
+                 gdf["area_km2"] = np.nan
 
     if calcular_percentuais and "area_km2" in gdf.columns:
         gdf["perc_alerta"] = (gdf.get("alerta_km2", 0) / gdf["area_km2"]) * 100
@@ -229,7 +243,9 @@ def carregar_shapefile(caminho: str, calcular_percentuais: bool = True, columns:
                  except Exception:
                     pass 
 
-    return gdf.to_crs("EPSG:4326")
+    result_gdf = gdf.to_crs("EPSG:4326")
+    gc.collect()
+    return result_gdf
 
 def preparar_hectares(gdf: gpd.GeoDataFrame) -> gpd.GeoDataFrame:
     """Adiciona colunas em hectares ao GeoDataFrame."""
@@ -302,6 +318,7 @@ def load_csv(uploaded_file, columns: list[str] = None) -> pd.DataFrame:
                     df[col] = df[col].astype('category')
                 except Exception:
                     pass
+    gc.collect()
     return df
     
 @st.cache_data(persist="disk")
@@ -365,7 +382,7 @@ def carregar_dados_conflitos_municipio(arquivo_excel: str) -> pd.DataFrame:
             res['Município'] = res['Município'].astype('category')
         except Exception:
             pass
-
+    gc.collect()
     return res
 
 def criar_figura(gdf_cnuc_filtered, gdf_sigef_filtered, df_csv_filtered, centro, ids_selecionados, invadindo_opcao):
@@ -1324,30 +1341,41 @@ def fig_desmatamento_temporal(gdf_alertas_filtered: gpd.GeoDataFrame) -> go.Figu
 
 def fig_desmatamento_municipio(gdf_alertas_filtered: gpd.GeoDataFrame) -> go.Figure:
     """Cria um gráfico de barras mostrando a área total de alertas de desmatamento por município."""
-    df = gdf_alertas_filtered.sort_values('AREAHA', ascending=False)
-    if df.empty:
+    if gdf_alertas_filtered.empty or 'MUNICIPIO' not in gdf_alertas_filtered.columns or 'AREAHA' not in gdf_alertas_filtered.columns:
+        return go.Figure() # Return empty figure if essential columns are missing
+
+    # Ensure AREAHA is numeric
+    gdf_alertas_filtered['AREAHA'] = pd.to_numeric(gdf_alertas_filtered['AREAHA'], errors='coerce').fillna(0)
+
+    df_agg = gdf_alertas_filtered.groupby('MUNICIPIO', observed=False)['AREAHA'].sum().reset_index()
+    df_agg = df_agg.sort_values('AREAHA', ascending=False)
+
+    # Limit to top N municipalities if it's too crowded, e.g., top 30
+    # df_agg = df_agg.head(30) # Optional: if the list is too long
+
+    if df_agg.empty: # Check if aggregation resulted in an empty DataFrame
         return go.Figure()
 
     fig = px.bar(
-        df,
+        df_agg, # Use aggregated data
         x='AREAHA',
         y='MUNICIPIO',
         orientation='h',
         text='AREAHA',
-        labels={'AREAHA': 'Área (ha)', 'MUNICIPIO': ''}
+        labels={'AREAHA': 'Área Total Desmatada (ha)', 'MUNICIPIO': 'Município'} # Updated labels
     )
-    fig = _apply_layout(fig, title="Desmatamento por Município")
+    fig = _apply_layout(fig, title="Desmatamento Total por Município") # Updated title
 
     fig.update_layout(
-        yaxis=dict(autorange="reversed"),
+        yaxis=dict(autorange="reversed"), # Keep if you want largest bar on top
         xaxis=dict(
-            tickformat=',d'                 
+            tickformat=',.0f' # Format as integer or with fewer decimals if preferred
         ),
-        margin=dict(l=80, r=100, t=50, b=20) 
+        margin=dict(l=150, r=40, t=50, b=20) # Adjust margins if y-axis labels are long
     )
 
     fig.update_traces(
-        texttemplate='%{text:.0f}',
+        texttemplate='%{text:,.0f}', # Format text on bars
         textposition='outside',
         cliponaxis=False,                 
         marker_line_color='rgb(80,80,80)',
@@ -1465,40 +1493,50 @@ import warnings
 warnings.filterwarnings('ignore')
 logging.getLogger().setLevel(logging.ERROR)
 
-DB_CONFIG = {
-    'host': 'dataiesb.iesbtech.com.br',
-    'database': '2312120036_Joel',
-    'user': '2312120036_Joel',
-    'password': '2312120036_Joel',
-    'port': '5432',
-    'schema': 'CPT',
-    'table': 'queimadas'
-}
+try:
+    CONFIGURACAO_BANCO_DADOS = {
+        'host': st.secrets.postgres.host,
+        'database': st.secrets.postgres.database,
+        'user': st.secrets.postgres.user,
+        'password': st.secrets.postgres.password,
+        'port': str(st.secrets.postgres.port),
+        'schema': st.secrets.postgres.esquema, # Assuming 'esquema' is the Portuguese for schema in secrets
+        'table': st.secrets.postgres.table
+    }
+except Exception as e:
+    st.error(f"Erro ao carregar configuração do banco de dados dos secrets: {e}. Verifique o arquivo secrets.toml.")
+    CONFIGURACAO_BANCO_DADOS = {}
 
 CHUNK_SIZE = 15000 
 MEMORY_THRESHOLD = 85  
 
-class GerenciarBancoDados:
-    def __init__(self):
+class GerenciadorBancoDados:
+    def __init__(self, config):
+        self.config = config
         self._engine = None
-        self._connection_string = self.construir_conx_string()
+        if self.config:
+            self._connection_string = self.construir_string_conexao()
+        else:
+            self._connection_string = None
 
-    def construir_conx_string(self) -> str:
-        return (f"postgresql://{DB_CONFIG['user']}:{DB_CONFIG['password']}"
-                f"@{DB_CONFIG['host']}:{DB_CONFIG['port']}/{DB_CONFIG['database']}")
+    def construir_string_conexao(self) -> str:
+        if not self.config or not all(k in self.config for k in ['user', 'password', 'host', 'port', 'database']): return ""
+        return (f"postgresql://{self.config['user']}:{self.config['password']}"
+                f"@{self.config['host']}:{self.config['port']}/{self.config['database']}")
     
-    def pegar_engine(self):
+    def obter_engine(self):
+        if not self.config or not self._connection_string:
+            return None
         if self._engine is None:
             try:
                 self._engine = create_engine(
                     self._connection_string,
-                    pool_size=5,
-                    max_overflow=10,
-                    pool_pre_ping=True,
-                    pool_recycle=3600,
-                    echo=False
+                    pool_size=5, max_overflow=10, pool_pre_ping=True,
+                    pool_recycle=3600, echo=False
                 )
-            except Exception:
+            except Exception as e:
+                st.error(f"Falha ao criar engine de conexão com o banco de dados: {e}")
+                self._engine = None
                 return None
         return self._engine
     
@@ -1507,10 +1545,10 @@ class GerenciarBancoDados:
             self._engine.dispose()
             self._engine = None
 
-class processarDadosINPE:
+class ProcessadorDadosINPE:
 
     def __init__(self):
-        self.db_manager = GerenciarBancoDados()
+        self.gerenciador_bd = GerenciadorBancoDados(CONFIGURACAO_BANCO_DADOS)
         self._base_filters = [
             "riscofogo BETWEEN 0 AND 1",
             "precipitacao >= 0",
@@ -1539,23 +1577,28 @@ class processarDadosINPE:
             if col != 'DataHora' and df[col].nunique() / len(df) < 0.4:
                 df[col] = df[col].astype('category')
         
+        gc.collect()
         return df
 
     def pegar_contagem_linhas(self, engine, where_clause: str) -> int:
+        if not CONFIGURACAO_BANCO_DADOS or 'schema' not in CONFIGURACAO_BANCO_DADOS or 'table' not in CONFIGURACAO_BANCO_DADOS: return 0
         try:
             count_query = text(f"""
                 SELECT COUNT(*) 
-                FROM "{DB_CONFIG['schema']}"."{DB_CONFIG['table']}"
+                FROM "{CONFIGURACAO_BANCO_DADOS['schema']}"."{CONFIGURACAO_BANCO_DADOS['table']}"
                 WHERE {where_clause}
             """)
             
             with engine.connect() as conn:
                 result = conn.execute(count_query)
-                return result.scalar() or 0
+                count = result.scalar() or 0
+                st.write(f"DEBUG ProcessadorDadosINPE.pegar_contagem_linhas: Cláusula WHERE='{where_clause}', Contagem={count}")
+                return count
         except Exception:
             return 0
 
     def construir_consulta_base(self) -> str:
+        if not CONFIGURACAO_BANCO_DADOS or 'schema' not in CONFIGURACAO_BANCO_DADOS or 'table' not in CONFIGURACAO_BANCO_DADOS: return ""
         return f"""
             SELECT
                 datahora,
@@ -1565,7 +1608,7 @@ class processarDadosINPE:
                 diasemchuva,
                 latitude,
                 longitude
-            FROM "{DB_CONFIG['schema']}"."{DB_CONFIG['table']}"
+            FROM "{CONFIGURACAO_BANCO_DADOS['schema']}"."{CONFIGURACAO_BANCO_DADOS['table']}"
         """
 
     def carregar_dados(self, engine, base_query: str, where_clause: str,
@@ -1586,6 +1629,7 @@ class processarDadosINPE:
                 """)
                 
                 chunk_df = pd.read_sql(chunk_query, engine, parse_dates=['datahora'])
+                st.write(f"DEBUG ProcessadorDadosINPE.carregar_dados (chunk loop): Offset={offset}, Linhas no Chunk={len(chunk_df) if chunk_df is not None else 'None'}")
                 chunk_df = self._optimize_dataframe(chunk_df)
                 chunks.append(chunk_df)
                 
@@ -1604,10 +1648,12 @@ class processarDadosINPE:
         return None
 
     def carregar_dados_inpe(self, year: Optional[int] = None) -> Optional[pd.DataFrame]:
-        engine = self.db_manager.get_engine()
+        engine = self.gerenciador_bd.obter_engine()
         if not engine:
-            return None
+            st.error("Falha ao obter o motor do banco de dados. Verifique a configuração.")
+            return pd.DataFrame() # Return empty DataFrame on engine failure
         
+        df = None # Initialize df
         try:
             filters = self._base_filters.copy()
             if year is not None:
@@ -1615,7 +1661,9 @@ class processarDadosINPE:
             where_clause = " AND ".join(filters)
 
             total_rows = self.pegar_contagem_linhas(engine, where_clause)
+            st.write(f"DEBUG ProcessadorDadosINPE.carregar_dados_inpe: Ano='{year if year is not None else "Todos"}', Total de Linhas Estimado={total_rows}")
             if total_rows == 0:
+                st.write(f"DEBUG ProcessadorDadosINPE.carregar_dados_inpe: Ano='{year if year is not None else "Todos"}', Nenhuma linha para carregar, retornando DataFrame vazio.")
                 return pd.DataFrame()
 
             base_query = self.construir_consulta_base()
@@ -1642,23 +1690,32 @@ class processarDadosINPE:
             df = self._otimizar_dataframe(df)
             df = df.dropna(subset=['DataHora', 'mun_corrigido'])
             
-            gc.collect()
+            st.write(f"DEBUG ProcessadorDadosINPE.carregar_dados_inpe: Ano='{year if year is not None else "Todos"}', DataFrame final - Vazio? {df.empty if df is not None else 'None'}, Linhas: {len(df) if df is not None else 'N/A'}")
+            gc.collect() # Collect after processing df
             return df
             
-        except Exception:
-            return None
+        except Exception as e:
+            st.error(f"Exceção em ProcessadorDadosINPE.carregar_dados_inpe: {e}")
+            gc.collect() # Collect even on exception
+            return pd.DataFrame() # Return empty DataFrame on exception
         finally:
-            self.db_manager.descartar()
+            self.gerenciador_bd.descartar()
+            gc.collect() # Ensure collection after engine disposal
 
     def pegar_anos_disponiveis(self) -> List[int]:
-        engine = self.db_manager.pegar_engine()
+        engine = self.gerenciador_bd.obter_engine()
         if not engine:
+            st.error("Falha ao obter o motor do banco de dados para buscar anos. Verifique a configuração.")
             return []
         
+        if not CONFIGURACAO_BANCO_DADOS or 'schema' not in CONFIGURACAO_BANCO_DADOS or 'table' not in CONFIGURACAO_BANCO_DADOS:
+            st.error("Configuração do banco de dados incompleta para buscar anos.")
+            return []
+
         try:
             query = text(f"""
                 SELECT DISTINCT EXTRACT(YEAR FROM datahora) AS year
-                FROM "{DB_CONFIG['schema']}"."{DB_CONFIG['table']}"
+                FROM "{CONFIGURACAO_BANCO_DADOS['schema']}"."{CONFIGURACAO_BANCO_DADOS['table']}"
                 WHERE datahora IS NOT NULL
                 ORDER BY year
             """)
@@ -1667,12 +1724,15 @@ class processarDadosINPE:
                 result = conn.execute(query)
                 years = [int(row[0]) for row in result.fetchall() if row[0] is not None]
             
+            gc.collect()
             return years
             
         except Exception:
+            gc.collect()
             return []
         finally:
-            self.db_manager.descartar()
+            self.gerenciador_bd.descartar()
+            gc.collect()
 
 class processarRanking:
     
@@ -1839,101 +1899,168 @@ class processarRanking:
         except Exception:
             return pd.DataFrame(), ''
 
-@st.cache_data(ttl=1800, show_spinner=False, max_entries=2)  
-def pegar_cache_dados(year: Optional[int] = None) -> Optional[pd.DataFrame]:
-    processor = processarDadosINPE()
+@st.cache_data(ttl=1800, show_spinner=False, max_entries=3)
+def obter_dados_queimadas_cache(year: Optional[int] = None) -> Optional[pd.DataFrame]:
+    processor = ProcessadorDadosINPE()
     return processor.carregar_dados_inpe(year)
 
 @st.cache_data(ttl=3600, show_spinner=False, max_entries=1) 
-def pegar_anos_disponiveis() -> List[int]:
-    processor = processarDadosINPE()
+def obter_anos_disponiveis_cache() -> List[int]:
+    processor = ProcessadorDadosINPE()
     return processor.pegar_anos_disponiveis()
 
 @st.cache_data(ttl=900, show_spinner=False, max_entries=3) 
-def pegar_cache_ranking(df_hash: str, theme: str, period: str) -> Tuple[pd.DataFrame, str]:
+def obter_ranking_cache(df_hash: str, theme: str, period: str) -> Tuple[pd.DataFrame, str]:
     parts = df_hash.split('_')
     if len(parts) >= 2:
         year_option = parts[0]
         
         if year_option == "Todos":
-            df = pegar_cache_dados(None)
+            df = obter_dados_queimadas_cache(None)
         else:
             try:
                 year = int(year_option)
-                df = pegar_cache_dados(year)
+                df = obter_dados_queimadas_cache(year)
             except ValueError:
-                df = pegar_cache_dados(None)
+                df = obter_dados_queimadas_cache(None)
     else:
-        df = pegar_cache_dados(None)
+        df = obter_dados_queimadas_cache(None)
 
-    if df is None:
+    if df is None: # df can be None if db connection fails
         return pd.DataFrame(), ''
 
-    processor = processarRanking()
+    processor = processarRanking() # Assuming processarRanking does not need CONFIGURACAO_BANCO_DADOS directly
     return processor.processar_ranking(df, theme, period)
 
-def inicializar_dados() -> Tuple[List[str], pd.DataFrame]:
+def inicializar_dados_queimadas() -> Tuple[List[str], pd.DataFrame]:
+    opcoes_ano = ["Todos os Anos"] # Default
+    df_base = pd.DataFrame()      # Default
     try:
-        years = pegar_anos_disponiveis()
-        year_options = ["Todos os Anos"] + [str(year) for year in years]
-        base_df = pegar_cache_dados(None)
+        anos = obter_anos_disponiveis_cache() # Returns [] on error
+        opcoes_ano = ["Todos os Anos"] + [str(ano) for ano in anos]
 
-        return year_options, base_df if base_df is not None else pd.DataFrame()
-    except Exception:
-        return ["Todos os Anos"], pd.DataFrame()
+        ano_mais_recente = None
+        if anos:
+            ano_mais_recente = max(anos)
 
-def pegar_dados_por_ano(year_option: str, base_df: pd.DataFrame) -> pd.DataFrame:
-    if base_df.empty:
+        # obter_dados_queimadas_cache now always returns a DataFrame
+        # If it's empty and an error occurred, st.error was already called.
+        df_base = obter_dados_queimadas_cache(ano_mais_recente)
+
+        return opcoes_ano, df_base
+    except Exception as e:
+        # This catch-all is if obter_anos_disponiveis_cache or obter_dados_queimadas_cache themselves raise an unexpected error
+        st.error(f"Erro inesperado ao inicializar dados da aba Queimadas: {e}")
+        return opcoes_ano, df_base # Return defaults
+
+def obter_dados_queimadas_por_ano(opcao_ano: str, df_base_atual: pd.DataFrame) -> pd.DataFrame:
+    dados_para_ano = pd.DataFrame() # Default to empty
+    try:
+        if opcao_ano == "Todos os Anos":
+            dados_para_ano = obter_dados_queimadas_cache(None)
+        else:
+            year = int(opcao_ano)
+            year_in_base_df = None
+            if not df_base_atual.empty and 'DataHora' in df_base_atual.columns:
+                if not pd.api.types.is_datetime64_any_dtype(df_base_atual['DataHora']):
+                    df_base_atual['DataHora'] = pd.to_datetime(df_base_atual['DataHora'], errors='coerce')
+                if not df_base_atual.empty and not df_base_atual['DataHora'].dropna().empty:
+                    year_in_base_df = df_base_atual['DataHora'].dropna().iloc[0].year
+
+            if year == year_in_base_df:
+                dados_para_ano = df_base_atual
+            else:
+                dados_para_ano = obter_dados_queimadas_cache(year)
+
+        # If an error occurred in cache, it would have displayed st.error and returned empty df
+        return dados_para_ano if dados_para_ano is not None else pd.DataFrame()
+
+    except ValueError: # For int(opcao_ano)
+        st.error(f"Opção de ano inválida: {opcao_ano}")
         return pd.DataFrame()
-    
-    if year_option == "Todos os Anos":
-        return base_df
-    else:
-        try:
-            year = int(year_option)
-            return base_df[base_df['DataHora'].dt.year == year].copy()
-        except (ValueError, KeyError):
-            return pd.DataFrame()
+    except Exception as e:
+        st.error(f"Erro inesperado ao obter dados de queimadas por ano: {e}")
+        return pd.DataFrame()
 
-def renderizar_interface():
-    YEAR_OPTIONS, DF_BASE = inicializar_dados()
-
-    if DF_BASE.empty:
-        st.error("Dados não disponíveis.")
+def renderizar_aba_queimadas():
+    if not CONFIGURACAO_BANCO_DADOS or not CONFIGURACAO_BANCO_DADOS.get('host'): # Check if essential keys are missing
+        st.error("A configuração do banco de dados para a aba Queimadas não foi carregada corretamente. Verifique os secrets.")
         return
+
+    ANO_OPCOES, DF_BASE_QUEIMADAS = inicializar_dados_queimadas()
     
     st.header("Focos de Calor")
     
-    ano_sel = st.selectbox(
-        'Período:',
-        YEAR_OPTIONS,
+    # Section for Graphs
+    st.subheader("Visualização Gráfica dos Focos de Calor")
+    ano_sel_graf = st.selectbox(
+        'Selecione o período para os gráficos:',
+        ANO_OPCOES,
         index=0,
-        key="ano_focos_calor"
+        key="ano_focos_calor_graficos_key"
     )
+    df_para_graficos = obter_dados_queimadas_por_ano(ano_sel_graf, DF_BASE_QUEIMADAS)
 
-    df_year = pegar_dados_por_ano(ano_sel, DF_BASE)
-
-    if df_year.empty:
-        st.warning(f"Sem dados para {ano_sel}")
-        return
-
-    st.subheader("Ranking de Municípios")
-    
-    col1, col2 = st.columns(2)
-    with col1:
-        tema_rank = st.selectbox(
-            'Indicador:',
-            ["Maior Risco de Fogo", "Maior Precipitação (evento)", "Máx. Dias Sem Chuva"],
-            key="tema_ranking"
-        )
-    df_hash = f"{ano_sel}_{len(df_year)}_{tema_rank}"
-    periodo = "Todo o Período" if ano_sel == "Todos os Anos" else f"Ano {ano_sel}"
-    df_rank, col_ord = pegar_cache_ranking(df_hash, tema_rank, periodo)
-
-    if not df_rank.empty:
-        st.dataframe(df_rank, use_container_width=True, hide_index=True)
+    if df_para_graficos.empty:
+        # This message is shown if data loading was successful but no data points for the selection,
+        # OR if data loading failed (in which case an st.error would have already been shown by lower functions).
+        st.info(f"Nenhum dado de queimadas disponível para visualização gráfica para o período: {ano_sel_graf}.")
     else:
-        st.info("Dados não disponíveis para este ranking.")
+        ano_param_graf = None if ano_sel_graf == "Todos os Anos" else int(ano_sel_graf)
+        display_periodo_graf = ("todo o período histórico" if ano_param_graf is None else f"o ano de {ano_param_graf}")
+
+        figs = graficos_inpe(df_para_graficos, ano_sel_graf) # graficos_inpe should handle its own empty df if it happens
+
+        st.subheader(f"Evolução Temporal do Risco de Fogo ({display_periodo_graf})")
+        st.plotly_chart(figs['temporal'], use_container_width=True)
+        # st.caption(f"Figura: Evolução mensal do risco médio de fogo para {display_periodo_graf}.") # Caption can be made more concise or part of title
+
+        col1_figs, col2_figs = st.columns(2, gap="large")
+        with col1_figs:
+            st.subheader(f"Top Municípios - Risco de Fogo ({display_periodo_graf})")
+            st.plotly_chart(figs['top_risco'], use_container_width=True)
+            st.subheader(f"Top Municípios - Precipitação ({display_periodo_graf})")
+            st.plotly_chart(figs['top_precip'], use_container_width=True)
+        with col2_figs:
+            st.subheader(f"Mapa de Distribuição dos Focos ({display_periodo_graf})")
+            st.plotly_chart(figs['mapa'], use_container_width=True, config={'scrollZoom': True})
+
+    st.divider()
+    st.header("Ranking de Municípios por Indicadores de Queimadas")
+    
+    # Section for Ranking - uses its own year selector for clarity or could reuse ano_sel_graf
+    colA_rank, colB_rank = st.columns(2)
+    with colA_rank:
+        ano_sel_rank = st.selectbox(
+            'Selecione o período para o ranking:',
+            ANO_OPCOES,
+            index=0,
+            key="ano_focos_calor_ranking_key" # Unique key for ranking year selection
+        )
+    with colB_rank:
+        tema_rank_val = st.selectbox(
+            'Indicador para ranking:',
+            ["Maior Risco de Fogo", "Maior Precipitação (evento)", "Máx. Dias Sem Chuva"],
+            key="tema_ranking_queimadas_key" # Unique key
+        )
+
+    df_para_ranking = obter_dados_queimadas_por_ano(ano_sel_rank, DF_BASE_QUEIMADAS)
+
+    if df_para_ranking.empty:
+        st.info(f"Dados insuficientes para gerar o ranking de '{tema_rank_val}' para o período: {ano_sel_rank}.")
+    else:
+        rank_hash_val = f"{ano_sel_rank}_{tema_rank_val}_{len(df_para_ranking)}"
+        periodo_rank_val = "Todo o Período Histórico" if ano_sel_rank == "Todos os Anos" else f"Ano de {ano_sel_rank}"
+
+        st.subheader(f"Ranking por {tema_rank_val} ({periodo_rank_val})")
+        df_rank_result, _ = obter_ranking_cache(rank_hash_val, tema_rank_val, periodo_rank_val)
+
+        if not df_rank_result.empty:
+            st.dataframe(df_rank_result, use_container_width=True, hide_index=True)
+        else:
+            # This message covers cases where ranking processing itself results in empty (e.g. no valid data after agg)
+            # or if obter_ranking_cache had an issue not already caught by st.error.
+            st.info(f"Não foi possível gerar o ranking de '{tema_rank_val}' para o período: {ano_sel_rank}.")
 
 gdf_alertas_cols = ['geometry', 'MUNICIPIO', 'AREAHA', 'ANODETEC', 'DATADETEC', 'CODEALERTA', 'ESTADO', 'BIOMA', 'VPRESSAO']
 gdf_cnuc_cols = ['geometry', 'nome_uc', 'municipio', 'alerta_km2', 'sigef_km2', 'area_km2', 'c_alertas', 'c_sigef', 'ha_total'] 
@@ -1982,9 +2109,7 @@ df_csv_raw = load_csv(
     r"CPT-PA-count.csv", 
     columns=df_csv_cols
 )
-df_confmun_raw = carregar_dados_conflitos_municipio(
-    r"CPTF-PA.xlsx"
-)
+# df_confmun_raw will be loaded inside Tab 1 (CPT)
 
 @st.cache_data(persist="disk")
 def load_df_proc(caminho: str, columns: list[str]) -> pd.DataFrame:
@@ -2000,12 +2125,10 @@ def load_df_proc(caminho: str, columns: list[str]) -> pd.DataFrame:
                     df[col] = df[col].astype('category')
                  except Exception:
                     pass
+    gc.collect()
     return df
 
-df_proc_raw    = load_df_proc(
-    r"processos_tjpa_completo_atualizada_pronto.csv",
-    columns=df_proc_cols
-)
+# df_proc_raw will be loaded inside Tab 2 (Justiça)
 
 tabs = st.tabs(["Sobreposições", "CPT", "Justiça", "Queimadas", "Desmatamento"])
 
@@ -2189,9 +2312,13 @@ with tabs[1]:
             unsafe_allow_html=True
         )
 
+    # Load df_confmun_raw here as it's specific to this tab
+    df_confmun_raw = carregar_dados_conflitos_municipio(
+        r"CPTF-PA.xlsx"
+    )
     df_tabela_social = df_confmun_raw.copy()
 
-    df_csv_cleaned = df_csv_raw.copy()
+    df_csv_cleaned = df_csv_raw.copy() # df_csv_raw is loaded globally
     if 'Município' in df_csv_cleaned.columns:
         df_csv_cleaned['Município'] = df_csv_cleaned['Município'].apply(lambda x: str(x).strip().title() if pd.notna(x) else None)
 
@@ -2336,6 +2463,12 @@ with tabs[2]:
         unsafe_allow_html=True
     )
     
+    # Load df_proc_raw here as it's specific to this tab
+    df_proc_raw = load_df_proc(
+        r"processos_tjpa_completo_atualizada_pronto.csv",
+        columns=df_proc_cols
+    )
+
     if 'data_ajuizamento' in df_proc_raw.columns:
         df_proc_raw['data_ajuizamento'] = pd.to_datetime(df_proc_raw['data_ajuizamento'], errors='coerce')
     if 'ultima_atualizaçao' in df_proc_raw.columns:
@@ -2609,87 +2742,8 @@ with tabs[2]:
     )
 
 with tabs[3]:
-    st.header("Focos de Calor")
-
-    with st.expander("ℹ️ Sobre esta seção", expanded=True):
-        st.write(
-            "Esta análise apresenta dados sobre focos de calor detectados por satélite, incluindo:"
-        )
-        st.write("- Risco de fogo") 
-        st.write("- Precipitação acumulada")
-        st.write("- Distribuição espacial")
-        st.markdown(
-            "**Fonte Geral da Seção:** INPE – Programa Queimadas, 2025.",
-            unsafe_allow_html=True
-        )
-
-    YEAR_OPTIONS, DF_BASE = inicializar_dados()
-
-    if DF_BASE is not None and not DF_BASE.empty:
-        ano_sel_graf = st.selectbox(
-            'Período para gráficos:',
-            YEAR_OPTIONS,
-            index=0, 
-            key="ano_focos_calor_global_tab3"
-        )
-
-        df_graf = pegar_dados_por_ano(ano_sel_graf, DF_BASE)
-
-        ano_param = None if ano_sel_graf == "Todos os Anos" else int(ano_sel_graf)
-        display_graf = ("todo o período histórico" if ano_param is None else f"o ano de {ano_param}")
-
-        if not df_graf.empty:
-            df_hash = f"{ano_sel_graf}_{len(df_graf)}"
-            
-            figs = graficos_inpe(df_graf, ano_sel_graf)
-            
-            st.subheader("Evolução Temporal do Risco de Fogo")
-            st.plotly_chart(figs['temporal'], use_container_width=True)
-            st.caption(f"Figura: Evolução mensal do risco médio de fogo para {display_graf}.")
-
-            col1, col2 = st.columns(2, gap="large")
-            with col1:
-                st.subheader("Top Municípios por Risco Médio de Fogo")
-                st.plotly_chart(figs['top_risco'], use_container_width=True)
-                st.subheader("Top Municípios por Precipitação Acumulada")
-                st.plotly_chart(figs['top_precip'], use_container_width=True)
-            with col2:
-                st.subheader("Mapa de Distribuição dos Focos de Calor")
-                st.plotly_chart(figs['mapa'], use_container_width=True, config={'scrollZoom': True})
-        else:
-            st.warning(f"Nenhum dado para {ano_sel_graf}.")
-            
-        st.divider()
-        st.header("Ranking de Municípios por Indicadores de Queimadas")
-        st.caption("Classifica municípios pelo maior registro de cada indicador.")
-        colA, colB = st.columns(2)
-        with colA:
-            ano_sel_rank = st.selectbox(
-                'Período para ranking:', YEAR_OPTIONS,
-                index=0, key="ano_ranking_tab3"
-            )
-        with colB:
-            tema_rank = st.selectbox(
-                'Indicador para ranking:',
-                ["Maior Risco de Fogo", "Maior Precipitação (evento)", "Máx. Dias Sem Chuva"],
-                key="tema_ranking"
-            )
-        
-        ano_rank_param = None if ano_sel_rank == "Todos os Anos" else int(ano_sel_rank)
-        periodo_rank = ("Todo o Período Histórico" if ano_rank_param is None else f"Ano de {ano_rank_param}")
-
-        st.subheader(f"Ranking por {tema_rank} ({periodo_rank})")
-
-        rank_hash = f"{ano_sel_rank}_{tema_rank}_{len(pegar_dados_por_ano(ano_sel_rank, DF_BASE))}"
-
-        df_rank, col_ord = pegar_cache_ranking(rank_hash, tema_rank, periodo_rank)
-
-        if df_rank is not None and not df_rank.empty:
-            st.dataframe(df_rank, use_container_width=True, hide_index=True)
-        else:
-            st.info("Sem dados válidos para este ranking.")
-    else:
-        st.error("Não foi possível carregar os dados de queimadas. Verifique a conexão com o banco de dados.")
+    # This content is now inside renderizar_aba_queimadas()
+    pass # Placeholder for the diff tool, original content moved into the function
 
 with tabs[4]:
     st.header("Desmatamento")
