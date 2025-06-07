@@ -11,7 +11,15 @@ import numpy as np
 import duckdb
 import logging
 import psutil
+import textwrap
+import gc
+import psycopg2
+from psycopg2 import Error
+from sqlalchemy import create_engine, text
+from sqlalchemy.exc import SQLAlchemyError
+import warnings
 
+# --- Configurações Iniciais ---
 st.set_page_config(
     page_title="Dashboard de Conflitos Ambientais",
     page_icon="🌳",
@@ -19,6 +27,11 @@ st.set_page_config(
     initial_sidebar_state="expanded",
 )
 
+warnings.filterwarnings('ignore')
+logging.getLogger().setLevel(logging.ERROR)
+
+
+# --- Estilização (CSS) ---
 st.markdown("""
 <style>
 /* ---------- Fundo geral do app ---------- */
@@ -116,6 +129,8 @@ h1 {
 </style>
 """, unsafe_allow_html=True)
 
+
+# --- Configuração do Template Plotly ---
 def _apply_layout(fig: go.Figure, title: str, title_size: int = 16) -> go.Figure:
     fig.update_layout(
         template="pastel",
@@ -125,8 +140,8 @@ def _apply_layout(fig: go.Figure, title: str, title_size: int = 16) -> go.Figure
             "xanchor": "center",
             "font_size": title_size
         },
-        paper_bgcolor="white",   
-        plot_bgcolor="white",     
+        paper_bgcolor="white",    
+        plot_bgcolor="white",      
         margin=dict(l=20, r=20, t=50, b=20),
         hovermode="x unified",
         legend=dict(
@@ -160,10 +175,6 @@ PASTEL_SEQ = px.colors.qualitative.Pastel + px.colors.qualitative.Pastel1 + px.c
 
 _original_px_bar = px.bar
 
-st.title("Análise de Conflitos em Áreas Protegidas e Territórios Tradicionais")
-st.markdown("Monitoramento integrado de sobreposições em Unidades de Conservação, Terras Indígenas e Territórios Quilombolas")
-st.markdown("---")
-
 def _patched_px_bar(*args, **kwargs) -> go.Figure:
     fig: go.Figure = _original_px_bar(*args, **kwargs)
     seq = PASTEL_SEQ
@@ -186,6 +197,11 @@ def _patched_px_bar(*args, **kwargs) -> go.Figure:
 
 px.bar = _patched_px_bar
 
+st.title("Análise de Conflitos em Áreas Protegidas e Territórios Tradicionais")
+st.markdown("Monitoramento integrado de sobreposições em Unidades de Conservação, Terras Indígenas e Territórios Quilombolas")
+st.markdown("---")
+
+# --- Funções de Carregamento de Dados ---
 @st.cache_data(persist="disk")
 def carregar_shapefile(caminho: str, calcular_percentuais: bool = True, columns: list[str] = None) -> gpd.GeoDataFrame:
     gdf = gpd.read_file(caminho, columns=columns or [])
@@ -218,7 +234,7 @@ def carregar_shapefile(caminho: str, calcular_percentuais: bool = True, columns:
         except Exception as e:
             st.warning(f"Could not reproject/simplify for area calculation: {e}. Using existing 'area_km2' or skipping area calcs.")
             if "area_km2" not in gdf.columns:
-                 gdf["area_km2"] = np.nan
+                    gdf["area_km2"] = np.nan
 
     if calcular_percentuais and "area_km2" in gdf.columns:
         gdf["perc_alerta"] = (gdf.get("alerta_km2", 0) / gdf["area_km2"]) * 100
@@ -238,9 +254,9 @@ def carregar_shapefile(caminho: str, calcular_percentuais: bool = True, columns:
             gdf[col] = pd.to_numeric(gdf[col], downcast='integer', errors='coerce')
         elif gdf[col].dtype == 'object':
             if len(gdf[col].unique()) / len(gdf) < 0.5: 
-                 try:
+                try:
                     gdf[col] = gdf[col].astype('category')
-                 except Exception:
+                except Exception:
                     pass 
     
     result_gdf = gdf.to_crs("EPSG:4326")
@@ -255,9 +271,9 @@ def preparar_hectares(gdf: gpd.GeoDataFrame) -> gpd.GeoDataFrame:
     gdf2['area_ha']   = gdf2.get('area_km2', 0)   * 100
     
     for col in ['alerta_ha', 'sigef_ha', 'area_ha']:
-         if gdf2[col].dtype == 'float64':
+        if gdf2[col].dtype == 'float64':
             gdf2[col] = pd.to_numeric(gdf2[col], downcast='float', errors='coerce')
-         elif gdf2[col].dtype == 'int64':
+        elif gdf2[col].dtype == 'int64':
             gdf2[col] = pd.to_numeric(gdf2[col], downcast='integer', errors='coerce')
 
     return gdf2
@@ -330,7 +346,7 @@ def carregar_dados_conflitos_municipio(arquivo_excel: str) -> pd.DataFrame:
         return pd.DataFrame()
 
     lista_original = ['SÃO FÉLIX DO XINGU', 'ALTAMIRA', 'ITAITUBA',
-                      'JACAREACANGA', 'NOVO PROGRESSO']
+                        'JACAREACANGA', 'NOVO PROGRESSO']
 
     def clean_mun_name(name):
         if pd.isna(name):
@@ -385,15 +401,16 @@ def carregar_dados_conflitos_municipio(arquivo_excel: str) -> pd.DataFrame:
     gc.collect()
     return res
 
+# --- Funções de Criação de Gráficos e Componentes Visuais ---
 def criar_figura(gdf_cnuc_filtered, gdf_sigef_filtered, df_csv_filtered, centro, ids_selecionados, invadindo_opcao):
     try:
-        fig = px.choropleth_map(
+        fig = px.choropleth_mapbox(
             gdf_cnuc_filtered,
-            geojson=gdf_cnuc_filtered.__geo_interface__,
+            geojson=gdf_cnuc_filtered.geometry,
             locations=gdf_cnuc_filtered.index,
             color=np.ones(len(gdf_cnuc_filtered)),
             color_continuous_scale=[[0, "rgb(200,200,200)"], [1, "rgb(200,200,200)"]],
-            map_style="open-street-map",
+            mapbox_style="open-street-map",
             zoom=5,
             center=centro,
             opacity=0.5,
@@ -424,9 +441,9 @@ def criar_figura(gdf_cnuc_filtered, gdf_sigef_filtered, df_csv_filtered, centro,
                 ]
             
             if not sigef_plot.empty:
-                fig_sigef = px.choropleth_map(
+                fig_sigef = px.choropleth_mapbox(
                     sigef_plot,
-                    geojson=sigef_plot.__geo_interface__,
+                    geojson=sigef_plot.geometry,
                     locations=sigef_plot.index,
                     color=np.ones(len(sigef_plot)),
                     color_continuous_scale=[[0, "rgba(255,65,54,0.5)"], [1, "rgba(255,65,54,0.5)"]],
@@ -522,8 +539,7 @@ def criar_cards(gdf_cnuc_filtered, gdf_sigef_filtered, invadindo_opcao):
                 ucs_proj,
                 sigef_filtrado,
                 how='intersection',
-                keep_geom_type=False,
-                make_valid=True
+                keep_geom_type=False
             )
             sobreposicao['area_sobreposta'] = sobreposicao.geometry.area / 1e6
             total_sigef = sobreposicao['area_sobreposta'].sum()
@@ -629,8 +645,6 @@ def render_cards(perc_alerta, perc_sigef, total_unidades, contagem_alerta, conta
             ),
             unsafe_allow_html=True
         )
-
-import textwrap
 
 def truncate(text, max_chars=15):
     return text if len(text) <= max_chars else text[:max_chars-3] + "..."
@@ -739,7 +753,7 @@ def fig_contagens_uc(gdf_cnuc_filtered: gpd.GeoDataFrame) -> go.Figure:
 def fig_car_por_uc_donut(gdf_cnuc_ha_filtered: gpd.GeoDataFrame, nome_uc: str, modo_valor: str = "percent") -> go.Figure:
     gdf_cnuc_ha = gdf_cnuc_ha_filtered.copy()
     if gdf_cnuc_ha.empty:
-         return go.Figure()
+        return go.Figure()
 
     if nome_uc == "Todas":
         area_total = gdf_cnuc_ha["area_ha"].sum()
@@ -799,7 +813,7 @@ def fig_familias(df_conflitos_filtered: pd.DataFrame) -> go.Figure:
         yaxis=dict(autorange="reversed"),
         xaxis=dict(
             range=[0, max_val * 1.1],      
-            tickformat=',d'                 
+            tickformat=',d'               
         ),
         margin=dict(l=80, r=100, t=50, b=20) 
     )
@@ -807,7 +821,7 @@ def fig_familias(df_conflitos_filtered: pd.DataFrame) -> go.Figure:
     fig.update_traces(
         texttemplate='%{text:.0f}',
         textposition='outside',
-        cliponaxis=False,                 
+        cliponaxis=False,              
         marker_line_color='rgb(80,80,80)',
         marker_line_width=0.5
     )
@@ -904,17 +918,17 @@ def fig_justica(df_proc_filtered: pd.DataFrame) -> dict[str, go.Figure]:
             )
             figs['mun'] = _apply_layout(fig_mun, "Top 10 Municípios com Mais Processos", 16)
         else:
-             figs['mun'] = go.Figure().update_layout(title="Top 10 Municípios com Mais Processos", annotations=[dict(text="Sem dados", showarrow=False)])
+            figs['mun'] = go.Figure().update_layout(title="Top 10 Municípios com Mais Processos", annotations=[dict(text="Sem dados", showarrow=False)])
     else:
-         figs['mun'] = go.Figure().update_layout(title="Top 10 Municípios com Mais Processos", annotations=[dict(text="Sem dados", showarrow=False)])
+        figs['mun'] = go.Figure().update_layout(title="Top 10 Municípios com Mais Processos", annotations=[dict(text="Sem dados", showarrow=False)])
 
 
     # Evolução Mensal de Processos
     if 'data_ajuizamento' in df_proc.columns and not df_proc.empty:
         df_proc['ano_mes'] = (
             pd.to_datetime(df_proc['data_ajuizamento'], errors='coerce')
-              .dt.to_period('M')
-              .dt.to_timestamp()
+                .dt.to_period('M')
+                .dt.to_timestamp()
         )
         mensal = df_proc.groupby('ano_mes', observed=False).size().reset_index(name='Quantidade')
         if not mensal.empty:
@@ -935,9 +949,9 @@ def fig_justica(df_proc_filtered: pd.DataFrame) -> dict[str, go.Figure]:
             )
             figs['temp'] = _apply_layout(fig_temp, "Evolução Mensal de Processos", 16)
         else:
-             figs['temp'] = go.Figure().update_layout(title="Evolução Mensal de Processos", annotations=[dict(text="Sem dados", showarrow=False)])
+            figs['temp'] = go.Figure().update_layout(title="Evolução Mensal de Processos", annotations=[dict(text="Sem dados", showarrow=False)])
     else:
-         figs['temp'] = go.Figure().update_layout(title="Evolução Mensal de Processos", annotations=[dict(text="Sem dados", showarrow=False)])
+        figs['temp'] = go.Figure().update_layout(title="Evolução Mensal de Processos", annotations=[dict(text="Sem dados", showarrow=False)])
 
 
     # Top 10 Classes, Assuntos e Órgãos
@@ -1096,7 +1110,7 @@ def graficos_inpe(data_frame_entrada: pd.DataFrame, ano_selecionado_str: str) ->
         df_map_plot.dropna(subset=['Latitude', 'Longitude', 'RiscoFogo', 'mun_corrigido'], inplace=True)
         df_map_plot = df_map_plot[df_map_plot['RiscoFogo'].between(0, 1)]
         if 'Precipitacao' in df_map_plot.columns:
-             df_map_plot = df_map_plot[df_map_plot['Precipitacao'] >= 0]
+            df_map_plot = df_map_plot[df_map_plot['Precipitacao'] >= 0]
         else:
             df_map_plot['Precipitacao'] = 0
 
@@ -1126,7 +1140,7 @@ def graficos_inpe(data_frame_entrada: pd.DataFrame, ano_selecionado_str: str) ->
                     'RiscoFogo': ':.2f', 'Precipitacao': ':.1f mm'
                 }
 
-                fig_map = px.scatter_map(
+                fig_map = px.scatter_mapbox(
                     df_map_plot_sampled,
                     lat='Latitude',
                     lon='Longitude',
@@ -1136,7 +1150,7 @@ def graficos_inpe(data_frame_entrada: pd.DataFrame, ano_selecionado_str: str) ->
                     hover_data=hover_data_config,
                     color_continuous_scale=px.colors.sequential.YlOrRd,
                     size_max=15,
-                    map_style="open-street-map",
+                    mapbox_style="open-street-map",
                     zoom=zoom_level,
                     center=centro_map,
                     height=550
@@ -1217,9 +1231,9 @@ def mostrar_tabela_unificada(gdf_alertas_filtered, gdf_sigef_filtered, gdf_cnuc_
 
     styled = (
         df_merged.style
-                 .format({c:'{:,.2f}' for c in ['ALERTAS(HA)', 'SIGEF(HA)', 'CNUC(HA)']})
-                 .set_table_styles(styles)
-                 .set_table_attributes('style="border-collapse:collapse"')
+                   .format({c:'{:,.2f}' for c in ['ALERTAS(HA)', 'SIGEF(HA)', 'CNUC(HA)']})
+                   .set_table_styles(styles)
+                   .set_table_attributes('style="border-collapse:collapse"')
     )
 
     st.subheader("Tabela Área")
@@ -1240,7 +1254,7 @@ def fig_desmatamento_uc(gdf_cnuc_filtered: gpd.GeoDataFrame, gdf_alertas_filtere
 
 
     if alerts_in_ucs.empty:
-         return go.Figure() 
+        return go.Figure() 
 
     alert_area_per_uc = alerts_in_ucs.groupby('nome_uc', observed=False)['AREAHA'].sum().reset_index()
     alert_area_per_uc.columns = ['nome_uc', 'alerta_ha_total'] 
@@ -1295,7 +1309,7 @@ def fig_desmatamento_temporal(gdf_alertas_filtered: gpd.GeoDataFrame) -> go.Figu
     if gdf_alertas_filtered.empty or 'DATADETEC' not in gdf_alertas_filtered.columns:
         fig = go.Figure()
         fig.update_layout(title="Evolução Temporal de Alertas (Desmatamento)",
-                          xaxis_title="Data", yaxis_title="Área (ha)")
+                            xaxis_title="Data", yaxis_title="Área (ha)")
         return _apply_layout(fig, title="Evolução Temporal de Alertas (Desmatamento)", title_size=16)
 
     gdf_alertas_filtered['DATADETEC'] = pd.to_datetime(gdf_alertas_filtered['DATADETEC'], errors='coerce')
@@ -1304,10 +1318,10 @@ def fig_desmatamento_temporal(gdf_alertas_filtered: gpd.GeoDataFrame) -> go.Figu
     df_valid_dates = gdf_alertas_filtered.dropna(subset=['DATADETEC', 'AREAHA'])
 
     if df_valid_dates.empty:
-         fig = go.Figure()
-         fig.update_layout(title="Evolução Temporal de Alertas (Desmatamento)",
-                          xaxis_title="Data", yaxis_title="Área (ha)")
-         return _apply_layout(fig, title="Evolução Temporal de Alertas (Desmatamento)", title_size=16)
+        fig = go.Figure()
+        fig.update_layout(title="Evolução Temporal de Alertas (Desmatamento)",
+                            xaxis_title="Data", yaxis_title="Área (ha)")
+        return _apply_layout(fig, title="Evolução Temporal de Alertas (Desmatamento)", title_size=16)
 
     df_monthly = df_valid_dates.set_index('DATADETEC').resample('ME')['AREAHA'].sum().reset_index()
     df_monthly['DATADETEC'] = df_monthly['DATADETEC'].dt.to_period('M').astype(str)
@@ -1349,7 +1363,7 @@ def fig_desmatamento_municipio(gdf_alertas_filtered: gpd.GeoDataFrame) -> go.Fig
 
     df_agg = gdf_alertas_filtered.groupby('MUNICIPIO', observed=False)['AREAHA'].sum().reset_index()
     df_agg = df_agg.sort_values('AREAHA', ascending=False)
-   
+    
     # Limit to top N municipalities if it's too crowded, e.g., top 30
     # df_agg = df_agg.head(30) # Optional: if the list is too long
 
@@ -1377,7 +1391,7 @@ def fig_desmatamento_municipio(gdf_alertas_filtered: gpd.GeoDataFrame) -> go.Fig
     fig.update_traces(
         texttemplate='%{text:,.0f}', # Format text on bars
         textposition='outside',
-        cliponaxis=False,                 
+        cliponaxis=False,              
         marker_line_color='rgb(80,80,80)',
         marker_line_width=0.5
     )
@@ -1441,7 +1455,7 @@ def fig_desmatamento_mapa_pontos(gdf_alertas_filtered: gpd.GeoDataFrame) -> go.F
         fig.update_layout(title="Mapa de Alertas (Desmatamento)")
         return _apply_layout(fig, title="Mapa de Alertas (Desmatamento)", title_size=16)
 
-    fig = px.scatter_map(
+    fig = px.scatter_mapbox(
         gdf_map_plot,
         lat='Latitude',
         lon='Longitude',
@@ -1461,7 +1475,7 @@ def fig_desmatamento_mapa_pontos(gdf_alertas_filtered: gpd.GeoDataFrame) -> go.F
         zoom=zoom_level,
         center=center,
         opacity=0.7,
-        map_style='open-street-map' 
+        mapbox_style='open-street-map' 
     )
 
     fig.update_traces(showlegend=False)
@@ -1483,16 +1497,7 @@ def fig_desmatamento_mapa_pontos(gdf_alertas_filtered: gpd.GeoDataFrame) -> go.F
 
     return fig
 
-import gc
-import psycopg2
-from psycopg2 import Error
-from sqlalchemy import create_engine, text
-from sqlalchemy.exc import SQLAlchemyError
-import warnings
-
-warnings.filterwarnings('ignore')
-logging.getLogger().setLevel(logging.ERROR)
-
+# --- Lógica da Aba "Queimadas" (Banco de Dados e Processamento) ---
 try:
     CONFIGURACAO_BANCO_DADOS = {
         'host': st.secrets.postgres.host,
@@ -1500,7 +1505,7 @@ try:
         'user': st.secrets.postgres.user,
         'password': st.secrets.postgres.password,
         'port': str(st.secrets.postgres.port), 
-        'schema': st.secrets.postgres.esquema, # Assuming 'esquema' is the Portuguese for schema in secrets
+        'schema': st.secrets.postgres.esquema,
         'table': st.secrets.postgres.table 
     }
 except Exception as e: 
@@ -1592,7 +1597,6 @@ class ProcessadorDadosINPE:
             with engine.connect() as conn:
                 result = conn.execute(count_query)
                 count = result.scalar() or 0
-                st.write(f"DEBUG ProcessadorDadosINPE.pegar_contagem_linhas: Cláusula WHERE='{where_clause}', Contagem={count}")
                 return count
         except Exception:
             return 0
@@ -1629,8 +1633,7 @@ class ProcessadorDadosINPE:
                 """)
                 
                 chunk_df = pd.read_sql(chunk_query, engine, parse_dates=['datahora'])
-                st.write(f"DEBUG ProcessadorDadosINPE.carregar_dados (chunk loop): Offset={offset}, Linhas no Chunk={len(chunk_df) if chunk_df is not None else 'None'}")
-                chunk_df = self._optimize_dataframe(chunk_df)
+                chunk_df = self._otimizar_dataframe(chunk_df)
                 chunks.append(chunk_df)
                 
                 del chunk_df
@@ -1661,9 +1664,7 @@ class ProcessadorDadosINPE:
             where_clause = " AND ".join(filters)
 
             total_rows = self.pegar_contagem_linhas(engine, where_clause)
-            st.write(f"DEBUG ProcessadorDadosINPE.carregar_dados_inpe: Ano='{year if year is not None else "Todos"}', Total de Linhas Estimado={total_rows}")
             if total_rows == 0:
-                st.write(f"DEBUG ProcessadorDadosINPE.carregar_dados_inpe: Ano='{year if year is not None else "Todos"}', Nenhuma linha para carregar, retornando DataFrame vazio.")
                 return pd.DataFrame()
 
             base_query = self.construir_consulta_base()
@@ -1690,17 +1691,16 @@ class ProcessadorDadosINPE:
             df = self._otimizar_dataframe(df)
             df = df.dropna(subset=['DataHora', 'mun_corrigido'])
             
-            st.write(f"DEBUG ProcessadorDadosINPE.carregar_dados_inpe: Ano='{year if year is not None else "Todos"}', DataFrame final - Vazio? {df.empty if df is not None else 'None'}, Linhas: {len(df) if df is not None else 'N/A'}")
-            gc.collect() # Collect after processing df
+            gc.collect()
             return df
             
         except Exception as e:
             st.error(f"Exceção em ProcessadorDadosINPE.carregar_dados_inpe: {e}")
-            gc.collect() # Collect even on exception
-            return pd.DataFrame() # Return empty DataFrame on exception
+            gc.collect()
+            return pd.DataFrame()
         finally:
             self.gerenciador_bd.descartar()
-            gc.collect() # Ensure collection after engine disposal
+            gc.collect()
 
     def pegar_anos_disponiveis(self) -> List[int]:
         engine = self.gerenciador_bd.obter_engine()
@@ -1796,21 +1796,60 @@ class processarRanking:
         return pd.DataFrame()
     
     @staticmethod
-    def resultado_ranking(df_agg: pd.DataFrame, theme: str) -> Tuple[pd.DataFrame, str]:
+    def _format_fire_risk_ranking(df_agg: pd.DataFrame) -> pd.DataFrame:
+        df_agg = df_agg.round(4)
+        df_rank = df_agg.nlargest(20, ('RiscoFogo', 'mean')).reset_index()
+        
+        df_rank.columns = ['Município', 'Risco Médio', 'Risco Máximo', 'Nº Registros', 
+                           'Primeira Ocorrência', 'Última Ocorrência']
+        
+        df_rank['Primeira Ocorrência'] = pd.to_datetime(df_rank['Primeira Ocorrência']).dt.strftime('%d/%m/%Y')
+        df_rank['Última Ocorrência'] = pd.to_datetime(df_rank['Última Ocorrência']).dt.strftime('%d/%m/%Y')
+        
+        return df_rank
+
+    @staticmethod
+    def _format_precipitation_ranking(df_agg: pd.DataFrame) -> pd.DataFrame:
+        df_agg = df_agg.round(2)
+        df_rank = df_agg.nlargest(20, ('Precipitacao', 'max')).reset_index()
+        
+        df_rank.columns = ['Município', 'Precipitação Máxima (mm)', 'Precipitação Média (mm)',
+                           'Precipitação Total (mm)', 'Nº Registros', 'Primeira Ocorrência', 
+                           'Última Ocorrência']
+        
+        df_rank['Primeira Ocorrência'] = pd.to_datetime(df_rank['Primeira Ocorrência']).dt.strftime('%d/%m/%Y')
+        df_rank['Última Ocorrência'] = pd.to_datetime(df_rank['Última Ocorrência']).dt.strftime('%d/%m/%Y')
+        
+        return df_rank
+
+    @staticmethod
+    def _format_dry_days_ranking(df_agg: pd.DataFrame) -> pd.DataFrame:
+        df_agg = df_agg.round(1)
+        df_rank = df_agg.nlargest(20, ('DiaSemChuva', 'max')).reset_index()
+        
+        df_rank.columns = ['Município', 'Máx. Dias Sem Chuva', 'Média Dias Sem Chuva',
+                           'Nº Registros', 'Primeira Ocorrência', 'Última Ocorrência']
+        
+        df_rank['Primeira Ocorrência'] = pd.to_datetime(df_rank['Primeira Ocorrência']).dt.strftime('%d/%m/%Y')
+        df_rank['Última Ocorrência'] = pd.to_datetime(df_rank['Última Ocorrência']).dt.strftime('%d/%m/%Y')
+        
+        return df_rank
+
+    def resultado_ranking(self, df_agg: pd.DataFrame, theme: str) -> Tuple[pd.DataFrame, str]:
         if df_agg.empty:
             return pd.DataFrame(), ''
         
         formatters = {
             "Maior Risco de Fogo": (
-                processarRanking._format_fire_risk_ranking,
+                self._format_fire_risk_ranking,
                 'Risco Médio'
             ),
             "Maior Precipitação (evento)": (
-                processarRanking._format_precipitation_ranking,
+                self._format_precipitation_ranking,
                 'Precipitação Máxima (mm)'
             ),
             "Máx. Dias Sem Chuva": (
-                processarRanking._format_dry_days_ranking,
+                self._format_dry_days_ranking,
                 'Máx. Dias Sem Chuva'
             )
         }
@@ -1825,46 +1864,6 @@ class processarRanking:
             return df_rank, col_name
         
         return pd.DataFrame(), ''
-    
-    @staticmethod
-    def risco_fogo_ranking(df_agg: pd.DataFrame) -> pd.DataFrame:
-        df_agg = df_agg.round(4)
-        df_rank = df_agg.nlargest(20, ('RiscoFogo', 'mean')).reset_index()
-        
-        df_rank.columns = ['Município', 'Risco Médio', 'Risco Máximo', 'Nº Registros', 
-                           'Primeira Ocorrência', 'Última Ocorrência']
-        
-        df_rank['Primeira Ocorrência'] = pd.to_datetime(df_rank['Primeira Ocorrência']).dt.strftime('%d/%m/%Y')
-        df_rank['Última Ocorrência'] = pd.to_datetime(df_rank['Última Ocorrência']).dt.strftime('%d/%m/%Y')
-        
-        return df_rank
-    
-    @staticmethod
-    def precipitação_ranking(df_agg: pd.DataFrame) -> pd.DataFrame:
-        df_agg = df_agg.round(2)
-        df_rank = df_agg.nlargest(20, ('Precipitacao', 'max')).reset_index()
-        
-        df_rank.columns = ['Município', 'Precipitação Máxima (mm)', 'Precipitação Média (mm)',
-                           'Precipitação Total (mm)', 'Nº Registros', 'Primeira Ocorrência', 
-                           'Última Ocorrência']
-        
-        df_rank['Primeira Ocorrência'] = pd.to_datetime(df_rank['Primeira Ocorrência']).dt.strftime('%d/%m/%Y')
-        df_rank['Última Ocorrência'] = pd.to_datetime(df_rank['Última Ocorrência']).dt.strftime('%d/%m/%Y')
-        
-        return df_rank
-    
-    @staticmethod
-    def dias_sem_chuva_ranking(df_agg: pd.DataFrame) -> pd.DataFrame:
-        df_agg = df_agg.round(1)
-        df_rank = df_agg.nlargest(20, ('DiaSemChuva', 'max')).reset_index()
-        
-        df_rank.columns = ['Município', 'Máx. Dias Sem Chuva', 'Média Dias Sem Chuva',
-                           'Nº Registros', 'Primeira Ocorrência', 'Última Ocorrência']
-        
-        df_rank['Primeira Ocorrência'] = pd.to_datetime(df_rank['Primeira Ocorrência']).dt.strftime('%d/%m/%Y')
-        df_rank['Última Ocorrência'] = pd.to_datetime(df_rank['Última Ocorrência']).dt.strftime('%d/%m/%Y')
-        
-        return df_rank
 
     def processar_ranking(self, df: pd.DataFrame, theme: str, period: str) -> Tuple[pd.DataFrame, str]:
         if df is None or df.empty:
@@ -1929,7 +1928,7 @@ def obter_ranking_cache(df_hash: str, theme: str, period: str) -> Tuple[pd.DataF
     if df is None: # df can be None if db connection fails
         return pd.DataFrame(), ''
 
-    processor = processarRanking() # Assuming processarRanking does not need CONFIGURACAO_BANCO_DADOS directly
+    processor = processarRanking()
     return processor.processar_ranking(df, theme, period)
 
 def inicializar_dados_queimadas() -> Tuple[List[str], pd.DataFrame]:
@@ -1983,7 +1982,7 @@ def obter_dados_queimadas_por_ano(opcao_ano: str, df_base_atual: pd.DataFrame) -
         return pd.DataFrame()
 
 def renderizar_aba_queimadas():
-    if not CONFIGURACAO_BANCO_DADOS or not CONFIGURACAO_BANCO_DADOS.get('host'): # Check if essential keys are missing
+    if not CONFIGURACAO_BANCO_DADOS or not CONFIGURACAO_BANCO_DADOS.get('host'):
         st.error("A configuração do banco de dados para a aba Queimadas não foi carregada corretamente. Verifique os secrets.")
         return 
 
@@ -2002,46 +2001,39 @@ def renderizar_aba_queimadas():
     df_para_graficos = obter_dados_queimadas_por_ano(ano_sel_graf, DF_BASE_QUEIMADAS)
 
     if df_para_graficos.empty:
-        # This message is shown if data loading was successful but no data points for the selection,
-        # OR if data loading failed (in which case an st.error would have already been shown by lower functions).
         st.info(f"Nenhum dado de queimadas disponível para visualização gráfica para o período: {ano_sel_graf}.")
     else:
         ano_param_graf = None if ano_sel_graf == "Todos os Anos" else int(ano_sel_graf)
         display_periodo_graf = ("todo o período histórico" if ano_param_graf is None else f"o ano de {ano_param_graf}")
         
-        figs = graficos_inpe(df_para_graficos, ano_sel_graf) # graficos_inpe should handle its own empty df if it happens
+        figs = graficos_inpe(df_para_graficos, ano_sel_graf)
         
-        st.subheader(f"Evolução Temporal do Risco de Fogo ({display_periodo_graf})")
         st.plotly_chart(figs['temporal'], use_container_width=True)
-        # st.caption(f"Figura: Evolução mensal do risco médio de fogo para {display_periodo_graf}.") # Caption can be made more concise or part of title
 
-        col1_figs, col2_figs = st.columns(2, gap="large")
+        col1_figs, col2_figs = st.columns([2, 3], gap="large")
         with col1_figs:
-            st.subheader(f"Top Municípios - Risco de Fogo ({display_periodo_graf})")
             st.plotly_chart(figs['top_risco'], use_container_width=True)
-            st.subheader(f"Top Municípios - Precipitação ({display_periodo_graf})")
             st.plotly_chart(figs['top_precip'], use_container_width=True)
         with col2_figs:
-            st.subheader(f"Mapa de Distribuição dos Focos ({display_periodo_graf})")
             st.plotly_chart(figs['mapa'], use_container_width=True, config={'scrollZoom': True})
 
     st.divider()
     st.header("Ranking de Municípios por Indicadores de Queimadas")
     
-    # Section for Ranking - uses its own year selector for clarity or could reuse ano_sel_graf
+    # Section for Ranking
     colA_rank, colB_rank = st.columns(2)
     with colA_rank:
         ano_sel_rank = st.selectbox(
             'Selecione o período para o ranking:',
             ANO_OPCOES,
             index=0, 
-            key="ano_focos_calor_ranking_key" # Unique key for ranking year selection
+            key="ano_focos_calor_ranking_key"
         )
     with colB_rank:
         tema_rank_val = st.selectbox(
             'Indicador para ranking:',
             ["Maior Risco de Fogo", "Maior Precipitação (evento)", "Máx. Dias Sem Chuva"],
-            key="tema_ranking_queimadas_key" # Unique key
+            key="tema_ranking_queimadas_key"
         )
 
     df_para_ranking = obter_dados_queimadas_por_ano(ano_sel_rank, DF_BASE_QUEIMADAS)
@@ -2049,7 +2041,7 @@ def renderizar_aba_queimadas():
     if df_para_ranking.empty:
         st.info(f"Dados insuficientes para gerar o ranking de '{tema_rank_val}' para o período: {ano_sel_rank}.")
     else:
-        rank_hash_val = f"{ano_sel_rank}_{tema_rank_val}_{len(df_para_ranking)}"
+        rank_hash_val = f"{ano_sel_rank.replace(' ', '')}_{tema_rank_val.replace(' ', '')}_{len(df_para_ranking)}"
         periodo_rank_val = "Todo o Período Histórico" if ano_sel_rank == "Todos os Anos" else f"Ano de {ano_sel_rank}"
         
         st.subheader(f"Ranking por {tema_rank_val} ({periodo_rank_val})")
@@ -2058,10 +2050,10 @@ def renderizar_aba_queimadas():
         if not df_rank_result.empty:
             st.dataframe(df_rank_result, use_container_width=True, hide_index=True)
         else:
-            # This message covers cases where ranking processing itself results in empty (e.g. no valid data after agg)
-            # or if obter_ranking_cache had an issue not already caught by st.error.
             st.info(f"Não foi possível gerar o ranking de '{tema_rank_val}' para o período: {ano_sel_rank}.")
 
+
+# --- Carregamento Global dos Dados ---
 gdf_alertas_cols = ['geometry', 'MUNICIPIO', 'AREAHA', 'ANODETEC', 'DATADETEC', 'CODEALERTA', 'ESTADO', 'BIOMA', 'VPRESSAO']
 gdf_cnuc_cols = ['geometry', 'nome_uc', 'municipio', 'alerta_km2', 'sigef_km2', 'area_km2', 'c_alertas', 'c_sigef', 'ha_total'] 
 gdf_sigef_cols = ['geometry', 'municipio', 'area_km2', 'invadindo']
@@ -2070,14 +2062,14 @@ df_proc_cols = ['numero_processo', 'data_ajuizamento', 'municipio', 'classe', 'a
 
 
 gdf_alertas_raw = carregar_shapefile(
-    r"alertas.shp",
+    "alertas.shp",
     calcular_percentuais=False,
     columns=gdf_alertas_cols
 )
 gdf_alertas_raw = gdf_alertas_raw.rename(columns={"id":"id_alerta"})
 
 gdf_cnuc_raw = carregar_shapefile(
-    r"cnuc.shp",
+    "cnuc.shp",
     columns=gdf_cnuc_cols
 )
 if 'ha_total' not in gdf_cnuc_raw.columns:
@@ -2087,11 +2079,11 @@ if 'ha_total' not in gdf_cnuc_raw.columns:
 gdf_cnuc_ha_raw = preparar_hectares(gdf_cnuc_raw)
 
 gdf_sigef_raw = carregar_shapefile(
-    r"sigef.shp",
+    "sigef.shp",
     calcular_percentuais=False,
     columns=gdf_sigef_cols
 )
-gdf_sigef_raw   = gdf_sigef_raw.rename(columns={"id":"id_sigef"})
+gdf_sigef_raw    = gdf_sigef_raw.rename(columns={"id":"id_sigef"})
 
 if 'MUNICIPIO' in gdf_sigef_raw.columns and 'municipio' not in gdf_sigef_raw.columns:
     gdf_sigef_raw = gdf_sigef_raw.rename(columns={'MUNICIPIO': 'municipio'})
@@ -2106,10 +2098,9 @@ centro = {
 }
 
 df_csv_raw = load_csv(
-    r"CPT-PA-count.csv", 
+    "CPT-PA-count.csv", 
     columns=df_csv_cols
 )
-# df_confmun_raw will be loaded inside Tab 1 (CPT)
 
 @st.cache_data(persist="disk")
 def load_df_proc(caminho: str, columns: list[str]) -> pd.DataFrame:
@@ -2121,15 +2112,14 @@ def load_df_proc(caminho: str, columns: list[str]) -> pd.DataFrame:
             df[col] = pd.to_numeric(df[col], downcast='integer', errors='coerce')
         elif df[col].dtype == 'object':
             if len(df[col].unique()) / len(df) < 0.5:
-                 try:
+                try:
                     df[col] = df[col].astype('category')
-                 except Exception:
+                except Exception:
                     pass
     gc.collect()
     return df
 
-# df_proc_raw will be loaded inside Tab 2 (Justiça)
-
+# --- Layout Principal com Abas ---
 tabs = st.tabs(["Sobreposições", "CPT", "Justiça", "Queimadas", "Desmatamento"])
 
 with tabs[0]:
@@ -2146,36 +2136,10 @@ with tabs[0]:
         st.markdown(
             "**Fonte Geral da Seção:** MMA - Ministério do Meio Ambiente. Cadastro Nacional de Unidades de Conservação. Brasília: MMA.",
             unsafe_allow_html=True
-               )
+                )
 
     perc_alerta, perc_sigef, total_unidades, contagem_alerta, contagem_sigef = criar_cards(gdf_cnuc_raw, gdf_sigef_raw, None)
-    cols = st.columns(5, gap="small")
-    titulos = [
-        ("Alertas / Ext. Ter.", f"{perc_alerta:.1f}%", "Área de alertas sobre extensão territorial"),
-        ("CARs / Ext. Ter.", f"{perc_sigef:.1f}%", "CARs sobre extensão territorial"),
-        ("Municípios", f"{total_unidades}", "Total de municípios na análise"),
-        ("Alertas", f"{contagem_alerta}", "Total de registros de alertas"),
-        ("CARs", f"{contagem_sigef}", "Cadastros Ambientais Rurais")
-    ]
-    card_template = """
-    <div style="
-        background-color:#F9F9FF;
-        border:1px solid #E00E0;
-        padding:1rem;
-        border-radius:8px;
-        box-shadow:0 2px 4px rgba(0,0,0,0.1);
-        text-align:center;
-        height:100px;
-        display:flex;
-        flex-direction:column;
-        justify-content:center;">
-        <h5 style="margin:0; font-size:0.9rem;">{0}</h5>
-        <p style="margin:0; font-size:1.2rem; font-weight:bold; color:#2F5496;">{1}</p>
-        <small style="color:#666;">{2}</small>
-    </div>
-    """
-    for col, (t, v, d) in zip(cols, titulos):
-        col.markdown(card_template.format(t, v, d), unsafe_allow_html=True)
+    render_cards(perc_alerta, perc_sigef, total_unidades, contagem_alerta, contagem_sigef)
 
     st.divider()
 
@@ -2191,18 +2155,17 @@ with tabs[0]:
         if invadindo_opcao and invadindo_opcao.lower() != "todos":
             sigef_filtered_for_sjoin = gdf_sigef_map[gdf_sigef_map["invadindo"].str.strip().str.lower() == invadindo_opcao.lower()]
             if not sigef_filtered_for_sjoin.empty:
-                 gdf_cnuc_proj_sjoin = gdf_cnuc_map.to_crs(sigef_filtered_for_sjoin.crs)
-                 gdf_filtrado_map = gpd.sjoin(gdf_cnuc_proj_sjoin, sigef_filtered_for_sjoin, how="inner", predicate="intersects")
-                 ids_selecionados_map = gdf_filtrado_map["id"].unique().tolist()
+                    gdf_cnuc_proj_sjoin = gdf_cnuc_map.to_crs(sigef_filtered_for_sjoin.crs)
+                    gdf_filtrado_map = gpd.sjoin(gdf_cnuc_proj_sjoin, sigef_filtered_for_sjoin, how="inner", predicate="intersects")
+                    ids_selecionados_map = gdf_filtrado_map["id"].unique().tolist()
             else:
-                 ids_selecionados_map = [] 
+                    ids_selecionados_map = [] 
 
         st.subheader("Mapa de Unidades")
         fig_map = criar_figura(gdf_cnuc_map, gdf_sigef_map, df_csv_raw, centro, ids_selecionados_map, invadindo_opcao)
         st.plotly_chart(
             fig_map,
             use_container_width=True,
-            height=300,
             config={"scrollZoom": True}
         )
         st.caption("Figura 1.1: Distribuição espacial das unidades de conservação.")
@@ -2216,7 +2179,7 @@ with tabs[0]:
             - Cores diferentes representam diferentes tipos de unidades
             - Sobreposições são destacadas quando selecionadas no filtro
 
-            **Fonte:** MMA - Ministério do Meio Ambiente. *Cadastro Nacional de Unidades de Conservação*. Brasília: MMA, 2025. Disponível em: https://www.gov.br/mma/. Acesso em: maio de 2025.
+            **Fonte:** MMA - Ministério do Meio Ambiente. *Cadastro Nacional de Unidades de Conservação*. Brasília: MMA, 2025. Disponível em: https://www.gov.br/mma/. Acesso em: junho de 2025.
             """)
 
         st.subheader("Proporção da Área do CAR sobre a UC")
@@ -2237,12 +2200,12 @@ with tabs[0]:
             - Pode ocorrer de o CAR ultrapassar 100% devido a sobreposições ou múltiplos cadastros em uma mesma área
             - Valores podem ser visualizados em hectares ou percentual, conforme seleção acima
 
-            **Fonte:** MMA - Ministério do Meio Ambiente. *Cadastro Nacional de Unidades de Conservação*. Brasília: MMA, 2025. Disponível em: https://www.gov.br/mma/. Acesso em: maio de 2025.
+            **Fonte:** MMA - Ministério do Meio Ambiente. *Cadastro Nacional de Unidades de Conservação*. Brasília: MMA, 2025. Disponível em: https://www.gov.br/mma/. Acesso em: junho de 2025.
             """)
 
     with row1_chart1:
         st.subheader("Áreas por UC")
-        st.plotly_chart(fig_sobreposicoes(gdf_cnuc_ha_raw), use_container_width=True, height=350)
+        st.plotly_chart(fig_sobreposicoes(gdf_cnuc_ha_raw), use_container_width=True)
         st.caption("Figura 1.3: Distribuição de áreas por unidade de conservação.")
         with st.expander("Detalhes e Fonte da Figura 1.3"):
             st.write("""
@@ -2254,11 +2217,11 @@ with tabs[0]:
             - Linha tracejada indica a média
             - Ordenado por tamanho da área
 
-            **Fonte:** MMA - Ministério do Meio Ambiente. *Cadastro Nacional de Unidades de Conservação*. Brasília: MMA, 2025. Disponível em: https://www.gov.br/mma/. Acesso em: maio de 2025.
+            **Fonte:** MMA - Ministério do Meio Ambiente. *Cadastro Nacional de Unidades de Conservação*. Brasília: MMA, 2025. Disponível em: https://www.gov.br/mma/. Acesso em: junho de 2025.
             """)
 
         st.subheader("Contagens por UC")
-        st.plotly_chart(fig_contagens_uc(gdf_cnuc_raw), use_container_width=True, height=350)
+        st.plotly_chart(fig_contagens_uc(gdf_cnuc_raw), use_container_width=True)
         st.caption("Figura 1.4: Contagem de sobreposições por unidade de conservação.")
         with st.expander("Detalhes e Fonte da Figura 1.4"):
             st.write("""
@@ -2270,7 +2233,7 @@ with tabs[0]:
             - Linha tracejada indica média total
             - Ordenado por total de sobreposições
 
-            **Fonte:** MMA - Ministério do Meio Ambiente. *Cadastro Nacional de Unidades de Conservação*. Brasília: MMA, 2025. Disponível em: https://www.gov.br/mma/. Acesso em: maio de 2025.
+            **Fonte:** MMA - Ministério do Meio Ambiente. *Cadastro Nacional de Unidades de Conservação*. Brasília: MMA, 2025. Disponível em: https://www.gov.br/mma/. Acesso em: junho de 2025.
             """)
 
     st.markdown("""<div style="background-color: #fff; border-radius: 6px; padding: 1.5rem; box-shadow: 0 2px 4px rgba(0,0,0,0.1); margin-bottom: 0.5rem;">
@@ -2292,7 +2255,7 @@ with tabs[0]:
         - Totais na última linha
         - Células coloridas por tipo de dado
 
-        **Fonte:** MMA - Ministério do Meio Ambiente. *Cadastro Nacional de Unidades de Conservação*. Brasília: MMA, 2025. Disponível em: https://www.gov.br/mma/. Acesso em: maio de 2025.
+        **Fonte:** MMA - Ministério do Meio Ambiente. *Cadastro Nacional de Unidades de Conservação*. Brasília: MMA, 2025. Disponível em: https://www.gov.br/mma/. Acesso em: junho de 2025.
         """)
     st.divider()
 
@@ -2312,18 +2275,17 @@ with tabs[1]:
             unsafe_allow_html=True
         )
 
-    # Load df_confmun_raw here as it's specific to this tab
     df_confmun_raw = carregar_dados_conflitos_municipio(
-        r"CPTF-PA.xlsx"
+        "CPTF-PA.xlsx"
     )
     df_tabela_social = df_confmun_raw.copy()
 
-    df_csv_cleaned = df_csv_raw.copy() # df_csv_raw is loaded globally
+    df_csv_cleaned = df_csv_raw.copy()
     if 'Município' in df_csv_cleaned.columns:
         df_csv_cleaned['Município'] = df_csv_cleaned['Município'].apply(lambda x: str(x).strip().title() if pd.notna(x) else None)
 
     if 'Município' in df_tabela_social.columns:
-         df_tabela_social['Município'] = df_tabela_social['Município'].apply(lambda x: str(x).strip().title() if pd.notna(x) else None)
+        df_tabela_social['Município'] = df_tabela_social['Município'].apply(lambda x: str(x).strip().title() if pd.notna(x) else None)
 
     csv_cols_to_merge = ['Município']
     if 'Ocupações Retomadas' in df_csv_cleaned.columns:
@@ -2367,7 +2329,7 @@ with tabs[1]:
         elif col == 'Conflitos Registrados':
             return 'background-color: #fff3e0; font-weight: bold' if val == df_display_com_total[col].iloc[-1] else 'background-color: #fff3e0'
         elif col == 'Ocupações Retomadas':
-             return 'background-color: #e3f2fd; font-weight: bold' if val == df_display_com_total[col].iloc[-1] else 'background-color: #e3f2fd'
+            return 'background-color: #e3f2fd; font-weight: bold' if val == df_display_com_total[col].iloc[-1] else 'background-color: #e3f2fd'
         return ''
 
     styled_df = df_display_com_total.style.apply(
@@ -2385,7 +2347,7 @@ with tabs[1]:
             <h3 style="color: #1E1E1E; margin-top: 0; margin-bottom: 0.5rem;">Famílias Afetadas</h3>
             <p style="color: #666; font-size: 0.95em; margin-bottom:0;">Distribuição do número de famílias afetadas por conflitos por município.</p>
         </div>""", unsafe_allow_html=True)
-        st.plotly_chart(fig_familias(df_confmun_raw), use_container_width=True, height=400, key="familias")
+        st.plotly_chart(fig_familias(df_confmun_raw), use_container_width=True, key="familias")
         st.caption("Figura 3.1: Distribuição de famílias afetadas por município.")
         with st.expander("Detalhes e Fonte da Figura 3.1"):
             st.write("""
@@ -2397,14 +2359,14 @@ with tabs[1]:
             - Valores apresentados em ordem decrescente
             - Inclui todos os tipos de conflitos registrados
 
-            **Fonte:** CPT - Comissão Pastoral da Terra. *Conflitos no Campo Brasil*. Goiânia: CPT Nacional, 2025. Disponível em: https://www.cptnacional.org.br/. Acesso em: maio de 2025.
+            **Fonte:** CPT - Comissão Pastoral da Terra. *Conflitos no Campo Brasil*. Goiânia: CPT Nacional, 2025. Disponível em: https://www.cptnacional.org.br/. Acesso em: junho de 2025.
             """)
     with col_conf:
         st.markdown("""<div style="background-color: #fff; border-radius: 6px; padding: 1.5rem; box-shadow: 0 2px 4px rgba(0,0,0,0.1); margin-bottom: 0.5rem;">
             <h3 style="color: #1E1E1E; margin-top: 0; margin-bottom: 0.5rem;">Conflitos Registrados</h3>
             <p style="color: #666; font-size: 0.95em; margin-bottom:0;">Número total de conflitos registrados por município.</p>
         </div>""", unsafe_allow_html=True)
-        st.plotly_chart(fig_conflitos(df_confmun_raw), use_container_width=True, height=400, key="conflitos")
+        st.plotly_chart(fig_conflitos(df_confmun_raw), use_container_width=True, key="conflitos")
         st.caption("Figura 3.2: Distribuição de conflitos registrados por município.")
         with st.expander("Detalhes e Fonte da Figura 3.2"):
             st.write("""
@@ -2416,7 +2378,7 @@ with tabs[1]:
             - Ordenação por quantidade de conflitos
             - Inclui todos os tipos de conflitos documentados
 
-            **Fonte:** CPT - Comissão Pastoral da Terra. *Conflitos no Campo Brasil*. Goiânia: CPT Nacional, 2025. Disponível em: https://www.cptnacional.org.br/. Acesso em: maio de 2025.
+            **Fonte:** CPT - Comissão Pastoral da Terra. *Conflitos no Campo Brasil*. Goiânia: CPT Nacional, 2025. Disponível em: https://www.cptnacional.org.br/. Acesso em: junho de 2025.
             """)
 
     st.markdown("---")
@@ -2440,7 +2402,7 @@ with tabs[1]:
         - Células coloridas por tipo de dado
         - Ordenação por número de famílias afetadas
 
-        **Fonte:** CPT - Comissão Pastoral da Terra. *Conflitos no Campo Brasil*. Goiânia: CPT Nacional, 2025. Disponível em: https://www.cptnacional.org.br/. Acesso em: maio de 2025.
+        **Fonte:** CPT - Comissão Pastoral da Terra. *Conflitos no Campo Brasil*. Goiânia: CPT Nacional, 2025. Disponível em: https://www.cptnacional.org.br/. Acesso em: junho de 2025.
         """)
     st.divider()
 
@@ -2465,7 +2427,7 @@ with tabs[2]:
     
     # Load df_proc_raw here as it's specific to this tab
     df_proc_raw = load_df_proc(
-        r"processos_tjpa_completo_atualizada_pronto.csv",
+        "processos_tjpa_completo_atualizada_pronto.csv",
         columns=df_proc_cols
     )
 
@@ -2487,7 +2449,7 @@ with tabs[2]:
         """, unsafe_allow_html=True)
         
         if 'mun' in figs_j and figs_j['mun'] is not None:
-            st.plotly_chart(figs_j['mun'].update_layout(height=400), use_container_width=True, key="jud_mun")
+            st.plotly_chart(figs_j['mun'], use_container_width=True, key="jud_mun")
         else:
             st.warning("Gráfico de municípios não pôde ser gerado.")
         
@@ -2509,7 +2471,7 @@ with tabs[2]:
         """, unsafe_allow_html=True)
         
         if 'class' in figs_j and figs_j['class'] is not None:
-            st.plotly_chart(figs_j['class'].update_layout(height=400), use_container_width=True, key="jud_class")
+            st.plotly_chart(figs_j['class'], use_container_width=True, key="jud_class")
         else:
             st.warning("Gráfico de classes não pôde ser gerado.")
         
@@ -2533,7 +2495,7 @@ with tabs[2]:
         """, unsafe_allow_html=True)
         
         if 'ass' in figs_j and figs_j['ass'] is not None:
-            st.plotly_chart(figs_j['ass'].update_layout(height=400), use_container_width=True, key="jud_ass")
+            st.plotly_chart(figs_j['ass'], use_container_width=True, key="jud_ass")
         else:
             st.warning("Gráfico de assuntos não pôde ser gerado.")
         
@@ -2555,7 +2517,7 @@ with tabs[2]:
         """, unsafe_allow_html=True)
         
         if 'org' in figs_j and figs_j['org'] is not None:
-            st.plotly_chart(figs_j['org'].update_layout(height=400), use_container_width=True, key="jud_org")
+            st.plotly_chart(figs_j['org'], use_container_width=True, key="jud_org")
         else:
             st.warning("Gráfico de órgãos julgadores não pôde ser gerado.")
         
@@ -2639,7 +2601,7 @@ with tabs[2]:
             st.dataframe(tabela_resumo, use_container_width=True)
             st.caption("Tabela 4.1: Top 20 municípios com mais processos judiciais.")
         else:
-             st.info("Dados insuficientes para gerar esta tabela.")
+            st.info("Dados insuficientes para gerar esta tabela.")
         
     elif tipo_analise == "Órgãos mais atuantes":
         if 'orgao_julgador' in df_filtrado.columns and 'numero_processo' in df_filtrado.columns and 'data_ajuizamento' in df_filtrado.columns:
@@ -2655,7 +2617,7 @@ with tabs[2]:
             st.dataframe(tabela_resumo, use_container_width=True)
             st.caption("Tabela 4.1: Top 15 órgãos julgadores mais atuantes.")
         else:
-             st.info("Dados insuficientes para gerar esta tabela.")
+            st.info("Dados insuficientes para gerar esta tabela.")
 
     elif tipo_analise == "Classes processuais mais frequentes":
         if 'classe' in df_filtrado.columns and 'numero_processo' in df_filtrado.columns and 'data_ajuizamento' in df_filtrado.columns:
@@ -2671,7 +2633,7 @@ with tabs[2]:
             st.dataframe(tabela_resumo, use_container_width=True)
             st.caption("Tabela 4.1: Top 15 classes processuais mais frequentes.")
         else:
-             st.info("Dados insuficientes para gerar esta tabela.")
+            st.info("Dados insuficientes para gerar esta tabela.")
 
     elif tipo_analise == "Assuntos mais recorrentes":
         if 'assuntos' in df_filtrado.columns and 'numero_processo' in df_filtrado.columns and 'data_ajuizamento' in df_filtrado.columns:
@@ -2687,7 +2649,7 @@ with tabs[2]:
             st.dataframe(tabela_resumo, use_container_width=True)
             st.caption("Tabela 4.1: Top 15 assuntos mais recorrentes.")
         else:
-             st.info("Dados insuficientes para gerar esta tabela.")
+            st.info("Dados insuficientes para gerar esta tabela.")
 
     else: 
         colunas_relevantes = ['numero_processo', 'data_ajuizamento', 'municipio', 'classe', 'assuntos', 'orgao_julgador']
@@ -2742,8 +2704,8 @@ with tabs[2]:
     )
 
 with tabs[3]:
-    # This content is now inside renderizar_aba_queimadas()
-    pass # Placeholder for the diff tool, original content moved into the function
+    # A chamada da função que renderiza o conteúdo desta aba está aqui.
+    renderizar_aba_queimadas()
 
 with tabs[4]:
     st.header("Desmatamento")
@@ -2759,7 +2721,7 @@ with tabs[4]:
         Os dados são provenientes do MapBiomas Alerta.
         """)
         st.markdown(
-            "**Fonte Geral da Seção:** MapBiomas Alerta. Plataforma de Dados de Alertas de Desmatamento. Disponível em: https://alerta.mapbiomas.org/. Acesso em: maio de 2025.",
+            "**Fonte Geral da Seção:** MapBiomas Alerta. Plataforma de Dados de Alertas de Desmatamento. Disponível em: https://alerta.mapbiomas.org/. Acesso em: junho de 2025.",
             unsafe_allow_html=True
         )
 
@@ -2781,7 +2743,7 @@ with tabs[4]:
             fig_desmat_uc = fig_desmatamento_uc(gdf_cnuc_raw, gdf_alertas_filtrado)
             if fig_desmat_uc and fig_desmat_uc.data:
                 st.subheader("Área de Alertas por UC")
-                st.plotly_chart(fig_desmat_uc, use_container_width=True, height=400, key="desmat_uc_chart")
+                st.plotly_chart(fig_desmat_uc, use_container_width=True, key="desmat_uc_chart")
                 st.caption("Figura 6.1: Área total de alertas de desmatamento por unidade de conservação.")
                 with st.expander("Detalhes e Fonte da Figura 6.1"):
                     st.write("""
@@ -2793,7 +2755,7 @@ with tabs[4]:
                     - A linha tracejada indica a média da área de alertas entre as UCs exibidas.
                     - Ordenado por área de alertas em ordem decrescente.
 
-                    **Fonte:** MapBiomas Alerta. *Plataforma de Dados de Alertas de Desmatamento*. Disponível em: https://alerta.mapbiomas.org/. Acesso em: maio de 2025.
+                    **Fonte:** MapBiomas Alerta. *Plataforma de Dados de Alertas de Desmatamento*. Disponível em: https://alerta.mapbiomas.org/. Acesso em: junho de 2025.
                     """)
             else:
                 st.info("Nenhum alerta de desmatamento encontrado sobrepondo as Unidades de Conservação para o período selecionado.")
@@ -2827,7 +2789,7 @@ with tabs[4]:
                     - O tamanho e a cor do ponto são proporcionais à área desmatada (em hectares).
                     - Áreas com maior concentração de pontos indicam maior atividade de desmatamento.
 
-                    **Fonte:** MapBiomas Alerta. *Plataforma de Dados de Alertas de Desmatamento*. Disponível em: https://alerta.mapbiomas.org/. Acesso em: maio de 2025.
+                    **Fonte:** MapBiomas Alerta. *Plataforma de Dados de Alertas de Desmatamento*. Disponível em: https://alerta.mapbiomas.org/. Acesso em: junho de 2025.
                     """)
             else:
                 st.info("Dados de alertas de desmatamento não contêm informações geográficas válidas para o mapa no período selecionado.")
@@ -2880,7 +2842,7 @@ with tabs[4]:
                 - **Bioma Principal**: Bioma mais frequente nos alertas do município
                 - **Vetor Pressão**: Principal vetor de pressão detectado nos alertas
 
-                **Fonte:** MapBiomas Alerta. *Plataforma de Dados de Alertas de Desmatamento*. Disponível em: https://alerta.mapbiomas.org/. Acesso em: maio de 2025.
+                **Fonte:** MapBiomas Alerta. *Plataforma de Dados de Alertas de Desmatamento*. Disponível em: https://alerta.mapbiomas.org/. Acesso em: junho de 2025.
                 """)
         else:
             st.info("Dados insuficientes para gerar o ranking de municípios.")
@@ -2893,7 +2855,7 @@ with tabs[4]:
         fig_desmat_temp = fig_desmatamento_temporal(gdf_alertas_raw)
         if fig_desmat_temp and fig_desmat_temp.data:
             st.subheader("Evolução Temporal de Alertas")
-            st.plotly_chart(fig_desmat_temp, use_container_width=True, height=400, key="desmat_temporal_chart")
+            st.plotly_chart(fig_desmat_temp, use_container_width=True, key="desmat_temporal_chart")
             st.caption("Figura 6.4: Evolução mensal da área total de alertas de desmatamento.")
             with st.expander("Detalhes e Fonte da Figura 6.4"):
                 st.write("""
@@ -2905,7 +2867,7 @@ with tabs[4]:
                 - A linha conecta os pontos para mostrar a tendência temporal.
                 - Valores são exibidos acima de cada ponto para facilitar a leitura.
 
-                **Fonte:** MapBiomas Alerta. *Plataforma de Dados de Alertas de Desmatamento*. Disponível em: https://alerta.mapbiomas.org/. Acesso em: maio de 2025.
+                **Fonte:** MapBiomas Alerta. *Plataforma de Dados de Alertas de Desmatamento*. Disponível em: https://alerta.mapbiomas.org/. Acesso em: junho de 2025.
                 """)
         else:
             st.info("Dados de alertas de desmatamento não contêm informações temporais válidas.")
