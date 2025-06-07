@@ -1535,7 +1535,7 @@ class GerenciadorBancoDados:
                     pool_recycle=3600, echo=False
                 )
             except Exception as e:
-                # Optionally log e
+                st.error(f"Falha ao criar engine de conexão com o banco de dados: {e}")
                 self._engine = None 
                 return None
         return self._engine
@@ -1591,7 +1591,9 @@ class ProcessadorDadosINPE:
             
             with engine.connect() as conn:
                 result = conn.execute(count_query)
-                return result.scalar() or 0
+                count = result.scalar() or 0
+                st.write(f"DEBUG ProcessadorDadosINPE.pegar_contagem_linhas: Cláusula WHERE='{where_clause}', Contagem={count}")
+                return count
         except Exception:
             return 0
 
@@ -1627,6 +1629,7 @@ class ProcessadorDadosINPE:
                 """)
                 
                 chunk_df = pd.read_sql(chunk_query, engine, parse_dates=['datahora'])
+                st.write(f"DEBUG ProcessadorDadosINPE.carregar_dados (chunk loop): Offset={offset}, Linhas no Chunk={len(chunk_df) if chunk_df is not None else 'None'}")
                 chunk_df = self._optimize_dataframe(chunk_df)
                 chunks.append(chunk_df)
                 
@@ -1658,7 +1661,9 @@ class ProcessadorDadosINPE:
             where_clause = " AND ".join(filters)
 
             total_rows = self.pegar_contagem_linhas(engine, where_clause)
+            st.write(f"DEBUG ProcessadorDadosINPE.carregar_dados_inpe: Ano='{year if year is not None else "Todos"}', Total de Linhas Estimado={total_rows}")
             if total_rows == 0:
+                st.write(f"DEBUG ProcessadorDadosINPE.carregar_dados_inpe: Ano='{year if year is not None else "Todos"}', Nenhuma linha para carregar, retornando DataFrame vazio.")
                 return pd.DataFrame()
 
             base_query = self.construir_consulta_base()
@@ -1685,11 +1690,12 @@ class ProcessadorDadosINPE:
             df = self._otimizar_dataframe(df)
             df = df.dropna(subset=['DataHora', 'mun_corrigido'])
             
+            st.write(f"DEBUG ProcessadorDadosINPE.carregar_dados_inpe: Ano='{year if year is not None else "Todos"}', DataFrame final - Vazio? {df.empty if df is not None else 'None'}, Linhas: {len(df) if df is not None else 'N/A'}")
             gc.collect() # Collect after processing df
             return df
             
-        except Exception:
-            # Log error (st.error or logging could be added here if not present)
+        except Exception as e:
+            st.error(f"Exceção em ProcessadorDadosINPE.carregar_dados_inpe: {e}")
             gc.collect() # Collect even on exception
             return pd.DataFrame() # Return empty DataFrame on exception
         finally:
