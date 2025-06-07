@@ -2146,36 +2146,10 @@ with tabs[0]:
         st.markdown(
             "**Fonte Geral da Seção:** MMA - Ministério do Meio Ambiente. Cadastro Nacional de Unidades de Conservação. Brasília: MMA.",
             unsafe_allow_html=True
-               )
+                )
 
     perc_alerta, perc_sigef, total_unidades, contagem_alerta, contagem_sigef = criar_cards(gdf_cnuc_raw, gdf_sigef_raw, None)
-    cols = st.columns(5, gap="small")
-    titulos = [
-        ("Alertas / Ext. Ter.", f"{perc_alerta:.1f}%", "Área de alertas sobre extensão territorial"),
-        ("CARs / Ext. Ter.", f"{perc_sigef:.1f}%", "CARs sobre extensão territorial"),
-        ("Municípios", f"{total_unidades}", "Total de municípios na análise"),
-        ("Alertas", f"{contagem_alerta}", "Total de registros de alertas"),
-        ("CARs", f"{contagem_sigef}", "Cadastros Ambientais Rurais")
-    ]
-    card_template = """
-    <div style="
-        background-color:#F9F9FF;
-        border:1px solid #E00E0;
-        padding:1rem;
-        border-radius:8px;
-        box-shadow:0 2px 4px rgba(0,0,0,0.1);
-        text-align:center;
-        height:100px;
-        display:flex;
-        flex-direction:column;
-        justify-content:center;">
-        <h5 style="margin:0; font-size:0.9rem;">{0}</h5>
-        <p style="margin:0; font-size:1.2rem; font-weight:bold; color:#2F5496;">{1}</p>
-        <small style="color:#666;">{2}</small>
-    </div>
-    """
-    for col, (t, v, d) in zip(cols, titulos):
-        col.markdown(card_template.format(t, v, d), unsafe_allow_html=True)
+    render_cards(perc_alerta, perc_sigef, total_unidades, contagem_alerta, contagem_sigef)
 
     st.divider()
 
@@ -2191,18 +2165,17 @@ with tabs[0]:
         if invadindo_opcao and invadindo_opcao.lower() != "todos":
             sigef_filtered_for_sjoin = gdf_sigef_map[gdf_sigef_map["invadindo"].str.strip().str.lower() == invadindo_opcao.lower()]
             if not sigef_filtered_for_sjoin.empty:
-                 gdf_cnuc_proj_sjoin = gdf_cnuc_map.to_crs(sigef_filtered_for_sjoin.crs)
-                 gdf_filtrado_map = gpd.sjoin(gdf_cnuc_proj_sjoin, sigef_filtered_for_sjoin, how="inner", predicate="intersects")
-                 ids_selecionados_map = gdf_filtrado_map["id"].unique().tolist()
+                    gdf_cnuc_proj_sjoin = gdf_cnuc_map.to_crs(sigef_filtered_for_sjoin.crs)
+                    gdf_filtrado_map = gpd.sjoin(gdf_cnuc_proj_sjoin, sigef_filtered_for_sjoin, how="inner", predicate="intersects")
+                    ids_selecionados_map = gdf_filtrado_map["id"].unique().tolist()
             else:
-                 ids_selecionados_map = [] 
+                    ids_selecionados_map = [] 
 
         st.subheader("Mapa de Unidades")
         fig_map = criar_figura(gdf_cnuc_map, gdf_sigef_map, df_csv_raw, centro, ids_selecionados_map, invadindo_opcao)
         st.plotly_chart(
             fig_map,
             use_container_width=True,
-            height=300,
             config={"scrollZoom": True}
         )
         st.caption("Figura 1.1: Distribuição espacial das unidades de conservação.")
@@ -2216,7 +2189,7 @@ with tabs[0]:
             - Cores diferentes representam diferentes tipos de unidades
             - Sobreposições são destacadas quando selecionadas no filtro
 
-            **Fonte:** MMA - Ministério do Meio Ambiente. *Cadastro Nacional de Unidades de Conservação*. Brasília: MMA, 2025. Disponível em: https://www.gov.br/mma/. Acesso em: maio de 2025.
+            **Fonte:** MMA - Ministério do Meio Ambiente. *Cadastro Nacional de Unidades de Conservação*. Brasília: MMA, 2025. Disponível em: https://www.gov.br/mma/. Acesso em: junho de 2025.
             """)
 
         st.subheader("Proporção da Área do CAR sobre a UC")
@@ -2237,12 +2210,12 @@ with tabs[0]:
             - Pode ocorrer de o CAR ultrapassar 100% devido a sobreposições ou múltiplos cadastros em uma mesma área
             - Valores podem ser visualizados em hectares ou percentual, conforme seleção acima
 
-            **Fonte:** MMA - Ministério do Meio Ambiente. *Cadastro Nacional de Unidades de Conservação*. Brasília: MMA, 2025. Disponível em: https://www.gov.br/mma/. Acesso em: maio de 2025.
+            **Fonte:** MMA - Ministério do Meio Ambiente. *Cadastro Nacional de Unidades de Conservação*. Brasília: MMA, 2025. Disponível em: https://www.gov.br/mma/. Acesso em: junho de 2025.
             """)
 
     with row1_chart1:
         st.subheader("Áreas por UC")
-        st.plotly_chart(fig_sobreposicoes(gdf_cnuc_ha_raw), use_container_width=True, height=350)
+        st.plotly_chart(fig_sobreposicoes(gdf_cnuc_ha_raw), use_container_width=True)
         st.caption("Figura 1.3: Distribuição de áreas por unidade de conservação.")
         with st.expander("Detalhes e Fonte da Figura 1.3"):
             st.write("""
@@ -2254,11 +2227,11 @@ with tabs[0]:
             - Linha tracejada indica a média
             - Ordenado por tamanho da área
 
-            **Fonte:** MMA - Ministério do Meio Ambiente. *Cadastro Nacional de Unidades de Conservação*. Brasília: MMA, 2025. Disponível em: https://www.gov.br/mma/. Acesso em: maio de 2025.
+            **Fonte:** MMA - Ministério do Meio Ambiente. *Cadastro Nacional de Unidades de Conservação*. Brasília: MMA, 2025. Disponível em: https://www.gov.br/mma/. Acesso em: junho de 2025.
             """)
 
         st.subheader("Contagens por UC")
-        st.plotly_chart(fig_contagens_uc(gdf_cnuc_raw), use_container_width=True, height=350)
+        st.plotly_chart(fig_contagens_uc(gdf_cnuc_raw), use_container_width=True)
         st.caption("Figura 1.4: Contagem de sobreposições por unidade de conservação.")
         with st.expander("Detalhes e Fonte da Figura 1.4"):
             st.write("""
@@ -2270,7 +2243,7 @@ with tabs[0]:
             - Linha tracejada indica média total
             - Ordenado por total de sobreposições
 
-            **Fonte:** MMA - Ministério do Meio Ambiente. *Cadastro Nacional de Unidades de Conservação*. Brasília: MMA, 2025. Disponível em: https://www.gov.br/mma/. Acesso em: maio de 2025.
+            **Fonte:** MMA - Ministério do Meio Ambiente. *Cadastro Nacional de Unidades de Conservação*. Brasília: MMA, 2025. Disponível em: https://www.gov.br/mma/. Acesso em: junho de 2025.
             """)
 
     st.markdown("""<div style="background-color: #fff; border-radius: 6px; padding: 1.5rem; box-shadow: 0 2px 4px rgba(0,0,0,0.1); margin-bottom: 0.5rem;">
@@ -2292,7 +2265,7 @@ with tabs[0]:
         - Totais na última linha
         - Células coloridas por tipo de dado
 
-        **Fonte:** MMA - Ministério do Meio Ambiente. *Cadastro Nacional de Unidades de Conservação*. Brasília: MMA, 2025. Disponível em: https://www.gov.br/mma/. Acesso em: maio de 2025.
+        **Fonte:** MMA - Ministério do Meio Ambiente. *Cadastro Nacional de Unidades de Conservação*. Brasília: MMA, 2025. Disponível em: https://www.gov.br/mma/. Acesso em: junho de 2025.
         """)
     st.divider()
 
@@ -2312,18 +2285,17 @@ with tabs[1]:
             unsafe_allow_html=True
         )
 
-    # Load df_confmun_raw here as it's specific to this tab
     df_confmun_raw = carregar_dados_conflitos_municipio(
-        r"CPTF-PA.xlsx"
+        "CPTF-PA.xlsx"
     )
     df_tabela_social = df_confmun_raw.copy()
 
-    df_csv_cleaned = df_csv_raw.copy() # df_csv_raw is loaded globally
+    df_csv_cleaned = df_csv_raw.copy()
     if 'Município' in df_csv_cleaned.columns:
         df_csv_cleaned['Município'] = df_csv_cleaned['Município'].apply(lambda x: str(x).strip().title() if pd.notna(x) else None)
 
     if 'Município' in df_tabela_social.columns:
-         df_tabela_social['Município'] = df_tabela_social['Município'].apply(lambda x: str(x).strip().title() if pd.notna(x) else None)
+        df_tabela_social['Município'] = df_tabela_social['Município'].apply(lambda x: str(x).strip().title() if pd.notna(x) else None)
 
     csv_cols_to_merge = ['Município']
     if 'Ocupações Retomadas' in df_csv_cleaned.columns:
@@ -2367,7 +2339,7 @@ with tabs[1]:
         elif col == 'Conflitos Registrados':
             return 'background-color: #fff3e0; font-weight: bold' if val == df_display_com_total[col].iloc[-1] else 'background-color: #fff3e0'
         elif col == 'Ocupações Retomadas':
-             return 'background-color: #e3f2fd; font-weight: bold' if val == df_display_com_total[col].iloc[-1] else 'background-color: #e3f2fd'
+            return 'background-color: #e3f2fd; font-weight: bold' if val == df_display_com_total[col].iloc[-1] else 'background-color: #e3f2fd'
         return ''
 
     styled_df = df_display_com_total.style.apply(
@@ -2385,7 +2357,7 @@ with tabs[1]:
             <h3 style="color: #1E1E1E; margin-top: 0; margin-bottom: 0.5rem;">Famílias Afetadas</h3>
             <p style="color: #666; font-size: 0.95em; margin-bottom:0;">Distribuição do número de famílias afetadas por conflitos por município.</p>
         </div>""", unsafe_allow_html=True)
-        st.plotly_chart(fig_familias(df_confmun_raw), use_container_width=True, height=400, key="familias")
+        st.plotly_chart(fig_familias(df_confmun_raw), use_container_width=True, key="familias")
         st.caption("Figura 3.1: Distribuição de famílias afetadas por município.")
         with st.expander("Detalhes e Fonte da Figura 3.1"):
             st.write("""
@@ -2397,14 +2369,14 @@ with tabs[1]:
             - Valores apresentados em ordem decrescente
             - Inclui todos os tipos de conflitos registrados
 
-            **Fonte:** CPT - Comissão Pastoral da Terra. *Conflitos no Campo Brasil*. Goiânia: CPT Nacional, 2025. Disponível em: https://www.cptnacional.org.br/. Acesso em: maio de 2025.
+            **Fonte:** CPT - Comissão Pastoral da Terra. *Conflitos no Campo Brasil*. Goiânia: CPT Nacional, 2025. Disponível em: https://www.cptnacional.org.br/. Acesso em: junho de 2025.
             """)
     with col_conf:
         st.markdown("""<div style="background-color: #fff; border-radius: 6px; padding: 1.5rem; box-shadow: 0 2px 4px rgba(0,0,0,0.1); margin-bottom: 0.5rem;">
             <h3 style="color: #1E1E1E; margin-top: 0; margin-bottom: 0.5rem;">Conflitos Registrados</h3>
             <p style="color: #666; font-size: 0.95em; margin-bottom:0;">Número total de conflitos registrados por município.</p>
         </div>""", unsafe_allow_html=True)
-        st.plotly_chart(fig_conflitos(df_confmun_raw), use_container_width=True, height=400, key="conflitos")
+        st.plotly_chart(fig_conflitos(df_confmun_raw), use_container_width=True, key="conflitos")
         st.caption("Figura 3.2: Distribuição de conflitos registrados por município.")
         with st.expander("Detalhes e Fonte da Figura 3.2"):
             st.write("""
@@ -2416,7 +2388,7 @@ with tabs[1]:
             - Ordenação por quantidade de conflitos
             - Inclui todos os tipos de conflitos documentados
 
-            **Fonte:** CPT - Comissão Pastoral da Terra. *Conflitos no Campo Brasil*. Goiânia: CPT Nacional, 2025. Disponível em: https://www.cptnacional.org.br/. Acesso em: maio de 2025.
+            **Fonte:** CPT - Comissão Pastoral da Terra. *Conflitos no Campo Brasil*. Goiânia: CPT Nacional, 2025. Disponível em: https://www.cptnacional.org.br/. Acesso em: junho de 2025.
             """)
 
     st.markdown("---")
@@ -2440,7 +2412,7 @@ with tabs[1]:
         - Células coloridas por tipo de dado
         - Ordenação por número de famílias afetadas
 
-        **Fonte:** CPT - Comissão Pastoral da Terra. *Conflitos no Campo Brasil*. Goiânia: CPT Nacional, 2025. Disponível em: https://www.cptnacional.org.br/. Acesso em: maio de 2025.
+        **Fonte:** CPT - Comissão Pastoral da Terra. *Conflitos no Campo Brasil*. Goiânia: CPT Nacional, 2025. Disponível em: https://www.cptnacional.org.br/. Acesso em: junho de 2025.
         """)
     st.divider()
 
@@ -2465,7 +2437,7 @@ with tabs[2]:
     
     # Load df_proc_raw here as it's specific to this tab
     df_proc_raw = load_df_proc(
-        r"processos_tjpa_completo_atualizada_pronto.csv",
+        "processos_tjpa_completo_atualizada_pronto.csv",
         columns=df_proc_cols
     )
 
@@ -2487,7 +2459,7 @@ with tabs[2]:
         """, unsafe_allow_html=True)
         
         if 'mun' in figs_j and figs_j['mun'] is not None:
-            st.plotly_chart(figs_j['mun'].update_layout(height=400), use_container_width=True, key="jud_mun")
+            st.plotly_chart(figs_j['mun'], use_container_width=True, key="jud_mun")
         else:
             st.warning("Gráfico de municípios não pôde ser gerado.")
         
@@ -2509,7 +2481,7 @@ with tabs[2]:
         """, unsafe_allow_html=True)
         
         if 'class' in figs_j and figs_j['class'] is not None:
-            st.plotly_chart(figs_j['class'].update_layout(height=400), use_container_width=True, key="jud_class")
+            st.plotly_chart(figs_j['class'], use_container_width=True, key="jud_class")
         else:
             st.warning("Gráfico de classes não pôde ser gerado.")
         
@@ -2533,7 +2505,7 @@ with tabs[2]:
         """, unsafe_allow_html=True)
         
         if 'ass' in figs_j and figs_j['ass'] is not None:
-            st.plotly_chart(figs_j['ass'].update_layout(height=400), use_container_width=True, key="jud_ass")
+            st.plotly_chart(figs_j['ass'], use_container_width=True, key="jud_ass")
         else:
             st.warning("Gráfico de assuntos não pôde ser gerado.")
         
@@ -2555,7 +2527,7 @@ with tabs[2]:
         """, unsafe_allow_html=True)
         
         if 'org' in figs_j and figs_j['org'] is not None:
-            st.plotly_chart(figs_j['org'].update_layout(height=400), use_container_width=True, key="jud_org")
+            st.plotly_chart(figs_j['org'], use_container_width=True, key="jud_org")
         else:
             st.warning("Gráfico de órgãos julgadores não pôde ser gerado.")
         
@@ -2639,7 +2611,7 @@ with tabs[2]:
             st.dataframe(tabela_resumo, use_container_width=True)
             st.caption("Tabela 4.1: Top 20 municípios com mais processos judiciais.")
         else:
-             st.info("Dados insuficientes para gerar esta tabela.")
+            st.info("Dados insuficientes para gerar esta tabela.")
         
     elif tipo_analise == "Órgãos mais atuantes":
         if 'orgao_julgador' in df_filtrado.columns and 'numero_processo' in df_filtrado.columns and 'data_ajuizamento' in df_filtrado.columns:
@@ -2655,7 +2627,7 @@ with tabs[2]:
             st.dataframe(tabela_resumo, use_container_width=True)
             st.caption("Tabela 4.1: Top 15 órgãos julgadores mais atuantes.")
         else:
-             st.info("Dados insuficientes para gerar esta tabela.")
+            st.info("Dados insuficientes para gerar esta tabela.")
 
     elif tipo_analise == "Classes processuais mais frequentes":
         if 'classe' in df_filtrado.columns and 'numero_processo' in df_filtrado.columns and 'data_ajuizamento' in df_filtrado.columns:
@@ -2671,7 +2643,7 @@ with tabs[2]:
             st.dataframe(tabela_resumo, use_container_width=True)
             st.caption("Tabela 4.1: Top 15 classes processuais mais frequentes.")
         else:
-             st.info("Dados insuficientes para gerar esta tabela.")
+            st.info("Dados insuficientes para gerar esta tabela.")
 
     elif tipo_analise == "Assuntos mais recorrentes":
         if 'assuntos' in df_filtrado.columns and 'numero_processo' in df_filtrado.columns and 'data_ajuizamento' in df_filtrado.columns:
@@ -2687,7 +2659,7 @@ with tabs[2]:
             st.dataframe(tabela_resumo, use_container_width=True)
             st.caption("Tabela 4.1: Top 15 assuntos mais recorrentes.")
         else:
-             st.info("Dados insuficientes para gerar esta tabela.")
+            st.info("Dados insuficientes para gerar esta tabela.")
 
     else: 
         colunas_relevantes = ['numero_processo', 'data_ajuizamento', 'municipio', 'classe', 'assuntos', 'orgao_julgador']
@@ -2742,8 +2714,8 @@ with tabs[2]:
     )
 
 with tabs[3]:
-    # This content is now inside renderizar_aba_queimadas()
-    pass # Placeholder for the diff tool, original content moved into the function
+    # A chamada da função que renderiza o conteúdo desta aba está aqui.
+    renderizar_aba_queimadas()
 
 with tabs[4]:
     st.header("Desmatamento")
@@ -2759,7 +2731,7 @@ with tabs[4]:
         Os dados são provenientes do MapBiomas Alerta.
         """)
         st.markdown(
-            "**Fonte Geral da Seção:** MapBiomas Alerta. Plataforma de Dados de Alertas de Desmatamento. Disponível em: https://alerta.mapbiomas.org/. Acesso em: maio de 2025.",
+            "**Fonte Geral da Seção:** MapBiomas Alerta. Plataforma de Dados de Alertas de Desmatamento. Disponível em: https://alerta.mapbiomas.org/. Acesso em: junho de 2025.",
             unsafe_allow_html=True
         )
 
@@ -2781,7 +2753,7 @@ with tabs[4]:
             fig_desmat_uc = fig_desmatamento_uc(gdf_cnuc_raw, gdf_alertas_filtrado)
             if fig_desmat_uc and fig_desmat_uc.data:
                 st.subheader("Área de Alertas por UC")
-                st.plotly_chart(fig_desmat_uc, use_container_width=True, height=400, key="desmat_uc_chart")
+                st.plotly_chart(fig_desmat_uc, use_container_width=True, key="desmat_uc_chart")
                 st.caption("Figura 6.1: Área total de alertas de desmatamento por unidade de conservação.")
                 with st.expander("Detalhes e Fonte da Figura 6.1"):
                     st.write("""
@@ -2793,7 +2765,7 @@ with tabs[4]:
                     - A linha tracejada indica a média da área de alertas entre as UCs exibidas.
                     - Ordenado por área de alertas em ordem decrescente.
 
-                    **Fonte:** MapBiomas Alerta. *Plataforma de Dados de Alertas de Desmatamento*. Disponível em: https://alerta.mapbiomas.org/. Acesso em: maio de 2025.
+                    **Fonte:** MapBiomas Alerta. *Plataforma de Dados de Alertas de Desmatamento*. Disponível em: https://alerta.mapbiomas.org/. Acesso em: junho de 2025.
                     """)
             else:
                 st.info("Nenhum alerta de desmatamento encontrado sobrepondo as Unidades de Conservação para o período selecionado.")
@@ -2827,7 +2799,7 @@ with tabs[4]:
                     - O tamanho e a cor do ponto são proporcionais à área desmatada (em hectares).
                     - Áreas com maior concentração de pontos indicam maior atividade de desmatamento.
 
-                    **Fonte:** MapBiomas Alerta. *Plataforma de Dados de Alertas de Desmatamento*. Disponível em: https://alerta.mapbiomas.org/. Acesso em: maio de 2025.
+                    **Fonte:** MapBiomas Alerta. *Plataforma de Dados de Alertas de Desmatamento*. Disponível em: https://alerta.mapbiomas.org/. Acesso em: junho de 2025.
                     """)
             else:
                 st.info("Dados de alertas de desmatamento não contêm informações geográficas válidas para o mapa no período selecionado.")
@@ -2880,7 +2852,7 @@ with tabs[4]:
                 - **Bioma Principal**: Bioma mais frequente nos alertas do município
                 - **Vetor Pressão**: Principal vetor de pressão detectado nos alertas
 
-                **Fonte:** MapBiomas Alerta. *Plataforma de Dados de Alertas de Desmatamento*. Disponível em: https://alerta.mapbiomas.org/. Acesso em: maio de 2025.
+                **Fonte:** MapBiomas Alerta. *Plataforma de Dados de Alertas de Desmatamento*. Disponível em: https://alerta.mapbiomas.org/. Acesso em: junho de 2025.
                 """)
         else:
             st.info("Dados insuficientes para gerar o ranking de municípios.")
@@ -2893,7 +2865,7 @@ with tabs[4]:
         fig_desmat_temp = fig_desmatamento_temporal(gdf_alertas_raw)
         if fig_desmat_temp and fig_desmat_temp.data:
             st.subheader("Evolução Temporal de Alertas")
-            st.plotly_chart(fig_desmat_temp, use_container_width=True, height=400, key="desmat_temporal_chart")
+            st.plotly_chart(fig_desmat_temp, use_container_width=True, key="desmat_temporal_chart")
             st.caption("Figura 6.4: Evolução mensal da área total de alertas de desmatamento.")
             with st.expander("Detalhes e Fonte da Figura 6.4"):
                 st.write("""
@@ -2905,7 +2877,7 @@ with tabs[4]:
                 - A linha conecta os pontos para mostrar a tendência temporal.
                 - Valores são exibidos acima de cada ponto para facilitar a leitura.
 
-                **Fonte:** MapBiomas Alerta. *Plataforma de Dados de Alertas de Desmatamento*. Disponível em: https://alerta.mapbiomas.org/. Acesso em: maio de 2025.
+                **Fonte:** MapBiomas Alerta. *Plataforma de Dados de Alertas de Desmatamento*. Disponível em: https://alerta.mapbiomas.org/. Acesso em: junho de 2025.
                 """)
         else:
             st.info("Dados de alertas de desmatamento não contêm informações temporais válidas.")
