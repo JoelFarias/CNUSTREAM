@@ -1405,7 +1405,7 @@ def fig_desmatamento_mapa_pontos(gdf_alertas_filtered: gpd.GeoDataFrame) -> go.F
         gdf_alertas_for_map = gdf_alertas_filtered.copy()
         gdf_alertas_for_map['geometry'] = gdf_alertas_for_map.geometry.simplify(tolerance=0.001, preserve_topology=True)
     else:
-        gdf_alertas_for_map = gdf_alertas_filtered # Keep as is if empty or no geometry
+        gdf_alertas_for_map = gdf_alertas_filtered 
 
     gdf_alertas_for_map['AREAHA'] = pd.to_numeric(gdf_alertas_for_map['AREAHA'], errors='coerce')
 
@@ -1424,19 +1424,18 @@ def fig_desmatamento_mapa_pontos(gdf_alertas_filtered: gpd.GeoDataFrame) -> go.F
         fig.update_layout(title="Mapa de Alertas (Desmatamento)")
         return _apply_layout(fig, title="Mapa de Alertas (Desmatamento)", title_size=16)
 
-    # gdf_map now contains Latitude and Longitude, so we dropna on gdf_map itself.
     gdf_map = gdf_map.dropna(subset=['Latitude', 'Longitude'])
 
-    if gdf_map.empty: # This check remains on gdf_map
+    if gdf_map.empty:
         fig = go.Figure()
         fig.update_layout(title="Mapa de Alertas (Desmatamento)")
         return _apply_layout(fig, title="Mapa de Alertas (Desmatamento)", title_size=16)
 
-    minx, miny, maxx, maxy = gdf_map.total_bounds # This remains on gdf_map
-    center = {'lat': (miny + maxy) / 2, 'lon': (minx + maxx) / 2} # This remains on gdf_map
-    span_lat = maxy - miny # This remains on gdf_map
-    lon_range = maxx - minx # This remains on gdf_map
-    max_range = max(span_lat, lon_range, 0.01) # This remains on gdf_map
+    minx, miny, maxx, maxy = gdf_map.total_bounds 
+    center = {'lat': (miny + maxy) / 2, 'lon': (minx + maxx) / 2} 
+    span_lat = maxy - miny 
+    lon_range = maxx - minx 
+    max_range = max(span_lat, lon_range, 0.01)
 
     zoom_level = 3.5
     if max_range < 0.1: zoom_level = 10
@@ -1448,7 +1447,6 @@ def fig_desmatamento_mapa_pontos(gdf_alertas_filtered: gpd.GeoDataFrame) -> go.F
     zoom_level = int(round(zoom_level))
 
     sample_size = 50000
-    # gdf_map_plot is derived from gdf_map, which in turn is derived from gdf_alertas_for_map. So this section is fine.
     if len(gdf_map) > sample_size:
         gdf_map_plot = gdf_map.sample(sample_size, random_state=1)
     else:
@@ -1460,7 +1458,7 @@ def fig_desmatamento_mapa_pontos(gdf_alertas_filtered: gpd.GeoDataFrame) -> go.F
         return _apply_layout(fig, title="Mapa de Alertas (Desmatamento)", title_size=16)
 
     fig = px.scatter_map(
-        gdf_map_plot, # This uses the correctly derived gdf_map_plot
+        gdf_map_plot, 
         lat='Latitude',
         lon='Longitude',
         size='AREAHA',
