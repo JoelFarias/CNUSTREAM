@@ -70,9 +70,6 @@ def carregar_dados_iniciais():
     gdf_alertas_raw = gdf_alertas_raw.rename(columns={"id":"id_alerta"})
     
     gdf_cnuc_raw = carregar_shapefile_cloud_seguro("cnuc.shp", colunas=gdf_cnuc_cols)
-    if 'ha_total' not in gdf_cnuc_raw.columns:
-        gdf_cnuc_raw['ha_total'] = gdf_cnuc_raw.get('area_km2', 0) * 100
-        gdf_cnuc_raw['ha_total'] = pd.to_numeric(gdf_cnuc_raw['ha_total'], downcast='float', errors='coerce')
     gdf_cnuc_ha_raw = preparar_hectares(gdf_cnuc_raw)
     
     gdf_sigef_raw = carregar_shapefile("sigef.shp", calcular_percentuais=False, colunas=gdf_sigef_cols)
