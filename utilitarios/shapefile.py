@@ -20,15 +20,19 @@ def carregar_shapefile_cloud_seguro(caminho: str, calcular_percentuais: bool = T
         gdf["geometry"] = gdf["geometry"].apply(lambda geom: geom.buffer(0) if geom and not geom.is_valid else geom)
         gdf = gdf[gdf["geometry"].notnull() & gdf["geometry"].is_valid]
         
+        area_km2_calculada = False
         if "area_km2" not in gdf.columns:
             try:
                 gdf_proj = gdf.to_crs("EPSG:31983")
                 gdf["area_km2"] = gdf_proj.geometry.area / 1e6
+                area_km2_calculada = True
             except Exception as e:
                 st.warning(f"Erro ao calcular área: {e}")
         
         if colunas:
             colunas_com_geometry = list(set(colunas + ['geometry']))
+            if area_km2_calculada and 'area_km2' not in colunas_com_geometry:
+                colunas_com_geometry.append('area_km2')
             colunas_disponiveis = [col for col in colunas_com_geometry if col in gdf.columns]
             if colunas_disponiveis:
                 colunas_disponiveis = [col for col in colunas_disponiveis if col != 'geometry'] + ['geometry']
