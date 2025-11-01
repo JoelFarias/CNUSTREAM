@@ -24,7 +24,39 @@ def carregar_shapefile_cloud_seguro(caminho: str, calcular_percentuais: bool = T
                 colunas_disponiveis = [col for col in colunas_disponiveis if col != 'geometry'] + ['geometry']
                 gdf = gdf[colunas_disponiveis]
         
-        return gdf
+        gdf["geometry"] = gdf["geometry"].apply(lambda geom: geom.buffer(0) if geom and not geom.is_valid else geom)
+        gdf = gdf[gdf["geometry"].notnull() & gdf["geometry"].is_valid]
+        
+        if "area_km2" not in gdf.columns or calcular_percentuais:
+            try:
+                gdf_proj = gdf.to_crs("EPSG:31983")
+                gdf["area_km2"] = gdf_proj.geometry.area / 1e6
+            except Exception as e:
+                st.warning(f"Erro ao calcular área: {e}")
+        
+        if calcular_percentuais and "area_km2" in gdf.columns:
+            gdf["perc_alerta"] = (gdf.get("alerta_km2", 0) / gdf["area_km2"]) * 100
+            gdf["perc_sigef"] = (gdf.get("sigef_km2", 0) / gdf["area_km2"]) * 100
+            gdf["perc_alerta"] = gdf["perc_alerta"].replace([np.inf, -np.inf], np.nan).fillna(0)
+            gdf["perc_sigef"] = gdf["perc_sigef"].replace([np.inf, -np.inf], np.nan).fillna(0)
+        else:
+            if "perc_alerta" not in gdf.columns:
+                gdf["perc_alerta"] = 0
+            if "perc_sigef" not in gdf.columns:
+                gdf["perc_sigef"] = 0
+        
+        gdf["id"] = gdf.index.astype(str)
+        
+        for col in gdf.columns:
+            if gdf[col].dtype == 'float64':
+                gdf[col] = pd.to_numeric(gdf[col], downcast='float', errors='ignore')
+            elif gdf[col].dtype == 'int64':
+                gdf[col] = pd.to_numeric(gdf[col], downcast='integer', errors='ignore')
+            elif gdf[col].dtype == 'object':
+                if gdf[col].nunique() / len(gdf) < 0.5:
+                    gdf[col] = gdf[col].astype('category')
+        
+        return gdf.to_crs("EPSG:4326")
         
     except Exception as e:
         st.error(f"❌ Erro ao carregar {caminho}: {str(e)}")
