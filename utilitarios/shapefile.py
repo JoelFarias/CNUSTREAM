@@ -3,30 +3,6 @@ import numpy as np
 import pandas as pd
 import geopandas as gpd
 import streamlit as st
-import subprocess
-
-def verificar_e_baixar_lfs(caminho: str) -> bool:
-    """
-    Verifica se o arquivo é um ponteiro LFS e tenta baixá-lo se necessário.
-    Retorna True se o arquivo está disponível (real ou já baixado).
-    """
-    if not os.path.exists(caminho):
-        return False
-    
-    # Verificar se é um ponteiro LFS (arquivo muito pequeno)
-    tamanho = os.path.getsize(caminho)
-    if tamanho < 200:  # Ponteiros LFS geralmente têm ~130 bytes
-        try:
-            # Tentar baixar com git lfs pull
-            subprocess.run(['git', 'lfs', 'pull', '--include', caminho], 
-                          check=False, capture_output=True, timeout=30)
-            # Verificar se agora o arquivo é maior
-            novo_tamanho = os.path.getsize(caminho)
-            return novo_tamanho > 1000  # Arquivo real deve ser maior
-        except:
-            return False
-    
-    return True  # Arquivo já está baixado
 
 @st.cache_data
 def carregar_shapefile_cloud_seguro(caminho: str, calcular_percentuais: bool = True, colunas: list[str] = None) -> gpd.GeoDataFrame:
@@ -176,29 +152,29 @@ def preparar_hectares(gdf: gpd.GeoDataFrame) -> gpd.GeoDataFrame:
 
     return gdf2
 
-@st.cache_data(ttl=3600, show_spinner=False)
+@st.cache_resource(show_spinner="Carregando dados do CAR...")
 def carregar_car_postgres() -> gpd.GeoDataFrame:
     """
     Carrega dados do CAR dos shapefiles locais (Git LFS).
-    Mantém nome da função para compatibilidade com código existente.
+    Usa cache_resource para dados estáticos que não mudam.
     """
     caminho = "Filtrado/Resultado_CAR_Final.shp"
     
-    # Verificar e baixar LFS se necessário
-    if not verificar_e_baixar_lfs(caminho):
-        st.warning(f"⚠️ Arquivo CAR não encontrado ou não pôde ser baixado: {caminho}")
+    if not os.path.exists(caminho):
+        st.error(f"❌ Arquivo CAR não encontrado: {caminho}")
         return gpd.GeoDataFrame()
     
     try:
         gdf = gpd.read_file(caminho)
         
         if gdf.empty:
-            st.warning(f"⚠️ Arquivo CAR vazio: {caminho}")
+            st.error(f"❌ Arquivo CAR vazio: {caminho}")
             return gpd.GeoDataFrame()
         
         if gdf.crs is None:
             gdf.set_crs("EPSG:4674", inplace=True)
-        gdf = gdf.to_crs("EPSG:4326")
+        if gdf.crs.to_epsg() != 4326:
+            gdf = gdf.to_crs("EPSG:4326")
         
         gdf["geometry"] = gdf["geometry"].apply(
             lambda geom: geom.buffer(0) if geom and not geom.is_valid else geom
@@ -216,29 +192,26 @@ def carregar_car_postgres() -> gpd.GeoDataFrame:
         
     except Exception as e:
         st.error(f"❌ Erro ao carregar CAR: {str(e)}")
-        import traceback
-        st.error(f"Detalhes: {traceback.format_exc()}")
         return gpd.GeoDataFrame()
 
 
-@st.cache_data(ttl=3600, show_spinner=False)
+@st.cache_resource(show_spinner="Carregando dados de alertas...")
 def carregar_alertas_postgres() -> gpd.GeoDataFrame:
     """
     Carrega alertas dos shapefiles locais (Git LFS).
-    Mantém nome da função para compatibilidade com código existente.
+    Usa cache_resource para dados estáticos que não mudam.
     """
     caminho = "Filtrado/Alertas_Estados_Restantes.shp"
     
-    # Verificar e baixar LFS se necessário
-    if not verificar_e_baixar_lfs(caminho):
-        st.warning(f"⚠️ Arquivo de alertas não encontrado ou não pôde ser baixado: {caminho}")
+    if not os.path.exists(caminho):
+        st.error(f"❌ Arquivo de alertas não encontrado: {caminho}")
         return gpd.GeoDataFrame()
     
     try:
         gdf = gpd.read_file(caminho)
         
         if gdf.empty:
-            st.warning(f"⚠️ Arquivo de alertas vazio: {caminho}")
+            st.error(f"❌ Arquivo de alertas vazio: {caminho}")
             return gpd.GeoDataFrame()
         
         if gdf.crs is None:
@@ -262,6 +235,4 @@ def carregar_alertas_postgres() -> gpd.GeoDataFrame:
         
     except Exception as e:
         st.error(f"❌ Erro ao carregar alertas: {str(e)}")
-        import traceback
-        st.error(f"Detalhes: {traceback.format_exc()}")
         return gpd.GeoDataFrame()
