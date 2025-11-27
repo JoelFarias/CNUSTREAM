@@ -4,16 +4,21 @@ import pandas as pd
 import geopandas as gpd
 import streamlit as st
 from sqlalchemy import create_engine
+import requests
+from shapely import wkt
 
-# Configuração PostgreSQL para CAR e Alertas
-# Usar pooler IPv6 para compatibilidade com Streamlit Cloud
+# Configuração PostgreSQL (local)
 DB_CONFIG = {
     'host': 'db.rjnzsfvxqvygkyusmsan.supabase.co',
-    'port': 6543,  # Porta do pooler (transaction mode)
+    'port': 5432,
     'database': 'postgres',
-    'user': 'postgres.rjnzsfvxqvygkyusmsan',  # Formato com projeto
+    'user': 'postgres',
     'password': 'jB5kgYN6DZF6pdRm'
 }
+
+# Supabase REST API (fallback para IPv6/Cloud)
+SUPABASE_URL = 'https://rjnzsfvxqvygkyusmsan.supabase.co'
+SUPABASE_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InJqbnpzZnZ4cXZ5Z2t5dXNtc2FuIiwicm9sZSI6ImFub24iLCJpYXQiOjE3MzI1NTY3NDAsImV4cCI6MjA0ODEzMjc0MH0.D3AvXN-zvPcGdH1HNLzQSh3qTYFEcAARUbHOg73s0o4'
 
 @st.cache_data
 def carregar_shapefile_cloud_seguro(caminho: str, calcular_percentuais: bool = True, colunas: list[str] = None) -> gpd.GeoDataFrame:
@@ -166,17 +171,14 @@ def preparar_hectares(gdf: gpd.GeoDataFrame) -> gpd.GeoDataFrame:
 @st.cache_data(ttl=3600, show_spinner=False)
 def carregar_car_postgres() -> gpd.GeoDataFrame:
     """
-    Carrega dados do CAR do PostgreSQL (todos os estados).
-    Retorna GeoDataFrame com mesma estrutura do sigef.shp para compatibilidade.
+    Carrega dados do CAR - tenta PostgreSQL, fallback para REST API.
     """
+    # Tentar PostgreSQL primeiro
     try:
-        # Debug: mostrar configuração
-        st.info(f"🔍 Tentando conectar PostgreSQL: {DB_CONFIG['host']}:{DB_CONFIG['port']} como {DB_CONFIG['user']}")
-        
         engine = create_engine(
             f"postgresql://{DB_CONFIG['user']}:{DB_CONFIG['password']}@"
             f"{DB_CONFIG['host']}:{DB_CONFIG['port']}/{DB_CONFIG['database']}",
-            connect_args={'connect_timeout': 10}
+            connect_args={'connect_timeout': 3}
         )
         
         query = """
@@ -189,56 +191,71 @@ def carregar_car_postgres() -> gpd.GeoDataFrame:
             FROM extensions."Resultado_CAR_Final"
         """
         
-        st.info("📊 Executando query...")
         gdf = gpd.read_postgis(query, engine, geom_col='geometry')
-        st.success(f"✅ CAR carregado: {len(gdf)} registros")
         
-        if gdf.empty:
-            st.warning("⚠️ Nenhum dado CAR encontrado no PostgreSQL")
-            return gpd.GeoDataFrame()
+        if not gdf.empty:
+            if gdf.crs is None:
+                gdf.set_crs("EPSG:4674", inplace=True)
+            gdf = gdf.to_crs("EPSG:4326")
+            gdf["geometry"] = gdf["geometry"].apply(
+                lambda geom: geom.buffer(0) if geom and not geom.is_valid else geom
+            )
+            gdf = gdf[gdf["geometry"].notnull() & gdf["geometry"].is_valid]
+            gdf['invadindo'] = 'CAR'
+            if 'num_area' in gdf.columns:
+                gdf['num_area'] = pd.to_numeric(gdf['num_area'], errors='coerce').fillna(0)
+            if 'id' in gdf.columns:
+                gdf = gdf.rename(columns={'id': 'id_car'})
+            return gdf
+    except:
+        pass
+    
+    # Fallback: REST API
+    try:
+        headers = {
+            'apikey': SUPABASE_KEY,
+            'Authorization': f'Bearer {SUPABASE_KEY}',
+            'Prefer': 'return=representation'
+        }
         
-        # Converter CRS
-        if gdf.crs is None:
-            gdf.set_crs("EPSG:4674", inplace=True)
-        gdf = gdf.to_crs("EPSG:4326")
-        
-        # Validar geometrias
-        gdf["geometry"] = gdf["geometry"].apply(
-            lambda geom: geom.buffer(0) if geom and not geom.is_valid else geom
+        response = requests.get(
+            f'{SUPABASE_URL}/rest/v1/Resultado_CAR_Final',
+            headers=headers,
+            params={'select': 'id,municipio,cod_estado,num_area,geom'},
+            timeout=60
         )
-        gdf = gdf[gdf["geometry"].notnull() & gdf["geometry"].is_valid]
         
-        # Adicionar coluna 'invadindo' = 'CAR' (compatibilidade com sigef.shp)
-        gdf['invadindo'] = 'CAR'
-        
-        # Converter num_area para numérico
-        if 'num_area' in gdf.columns:
-            gdf['num_area'] = pd.to_numeric(gdf['num_area'], errors='coerce').fillna(0)
-        
-        # Renomear id para evitar conflito
-        if 'id' in gdf.columns:
-            gdf = gdf.rename(columns={'id': 'id_car'})
-        
-        return gdf
-        
-    except Exception as e:
-        st.error(f"❌ Erro PostgreSQL CAR: {type(e).__name__}: {str(e)}")
-        return gpd.GeoDataFrame()
+        if response.status_code == 200:
+            data = response.json()
+            if data:
+                df = pd.DataFrame(data)
+                df['geometry'] = df['geom'].apply(lambda x: wkt.loads(x) if isinstance(x, str) else x)
+                gdf = gpd.GeoDataFrame(df, geometry='geometry', crs='EPSG:4674')
+                gdf = gdf.drop(columns=['geom'], errors='ignore')
+                gdf = gdf.to_crs('EPSG:4326')
+                gdf['invadindo'] = 'CAR'
+                if 'num_area' in gdf.columns:
+                    gdf['num_area'] = pd.to_numeric(gdf['num_area'], errors='coerce').fillna(0)
+                if 'id' in gdf.columns:
+                    gdf = gdf.rename(columns={'id': 'id_car'})
+                return gdf
+    except:
+        pass
+    
+    return gpd.GeoDataFrame()
 
 
 @st.cache_data(ttl=3600, show_spinner=False)
 def carregar_alertas_postgres() -> gpd.GeoDataFrame:
     """
-    Carrega dados de alertas de desmatamento do PostgreSQL.
-    Tabela: Alertas_Estados_Restantes no mesmo schema/base do CAR.
+    Carrega alertas - tenta PostgreSQL, fallback para REST API.
     """
+    # Tentar PostgreSQL primeiro
     try:
-        st.info(f"🔍 Tentando conectar PostgreSQL Alertas: {DB_CONFIG['host']}:{DB_CONFIG['port']}")
-        
         engine = create_engine(
             f"postgresql://{DB_CONFIG['user']}:{DB_CONFIG['password']}@"
             f"{DB_CONFIG['host']}:{DB_CONFIG['port']}/{DB_CONFIG['database']}",
-            connect_args={'connect_timeout': 10}
+            connect_args={'connect_timeout': 3}
         )
         
         query = """
@@ -248,39 +265,55 @@ def carregar_alertas_postgres() -> gpd.GeoDataFrame:
             FROM extensions."Alertas_Estados_Restantes"
         """
         
-        st.info("📊 Executando query alertas...")
         gdf = gpd.read_postgis(query, engine, geom_col='geometry')
-        st.success(f"✅ Alertas carregados: {len(gdf)} registros")
         
-        if gdf.empty:
-            st.warning("⚠️ Nenhum dado de alertas encontrado no PostgreSQL")
-            return gpd.GeoDataFrame()
+        if not gdf.empty:
+            if gdf.crs is None:
+                gdf.set_crs("EPSG:4674", inplace=True)
+            if gdf.crs.to_epsg() != 4326:
+                gdf = gdf.to_crs("EPSG:4326")
+            gdf["geometry"] = gdf["geometry"].apply(
+                lambda geom: geom.buffer(0) if geom and not geom.is_valid else geom
+            )
+            gdf = gdf[gdf["geometry"].notnull() & gdf["geometry"].is_valid]
+            if 'AREAHA' in gdf.columns:
+                gdf['AREAHA'] = pd.to_numeric(gdf['AREAHA'], errors='coerce').fillna(0)
+            if 'ANODETEC' in gdf.columns:
+                gdf['ANODETEC'] = pd.to_numeric(gdf['ANODETEC'], errors='coerce')
+            gdf['origem'] = 'PostgreSQL - Estados Restantes'
+            return gdf
+    except:
+        pass
+    
+    # Fallback: REST API
+    try:
+        headers = {
+            'apikey': SUPABASE_KEY,
+            'Authorization': f'Bearer {SUPABASE_KEY}',
+            'Prefer': 'return=representation'
+        }
         
-        # Converter CRS para EPSG:4326 (WGS 84)
-        if gdf.crs is None:
-            gdf.set_crs("EPSG:4674", inplace=True)
-        
-        if gdf.crs.to_epsg() != 4326:
-            gdf = gdf.to_crs("EPSG:4326")
-        
-        # Validar geometrias
-        gdf["geometry"] = gdf["geometry"].apply(
-            lambda geom: geom.buffer(0) if geom and not geom.is_valid else geom
+        response = requests.get(
+            f'{SUPABASE_URL}/rest/v1/Alertas_Estados_Restantes',
+            headers=headers,
+            timeout=60
         )
-        gdf = gdf[gdf["geometry"].notnull() & gdf["geometry"].is_valid]
         
-        # Normalizar colunas importantes
-        if 'AREAHA' in gdf.columns:
-            gdf['AREAHA'] = pd.to_numeric(gdf['AREAHA'], errors='coerce').fillna(0)
-        
-        if 'ANODETEC' in gdf.columns:
-            gdf['ANODETEC'] = pd.to_numeric(gdf['ANODETEC'], errors='coerce')
-        
-        # Adicionar coluna de origem para rastreabilidade
-        gdf['origem'] = 'PostgreSQL - Estados Restantes'
-        
-        return gdf
-        
-    except Exception as e:
-        st.error(f"❌ Erro PostgreSQL Alertas: {type(e).__name__}: {str(e)}")
-        return gpd.GeoDataFrame()
+        if response.status_code == 200:
+            data = response.json()
+            if data:
+                df = pd.DataFrame(data)
+                df['geometry'] = df['geom'].apply(lambda x: wkt.loads(x) if isinstance(x, str) else x)
+                gdf = gpd.GeoDataFrame(df, geometry='geometry', crs='EPSG:4674')
+                gdf = gdf.drop(columns=['geom'], errors='ignore')
+                gdf = gdf.to_crs('EPSG:4326')
+                if 'AREAHA' in gdf.columns:
+                    gdf['AREAHA'] = pd.to_numeric(gdf['AREAHA'], errors='coerce').fillna(0)
+                if 'ANODETEC' in gdf.columns:
+                    gdf['ANODETEC'] = pd.to_numeric(gdf['ANODETEC'], errors='coerce')
+                gdf['origem'] = 'PostgreSQL - Estados Restantes'
+                return gdf
+    except:
+        pass
+    
+    return gpd.GeoDataFrame()
