@@ -150,7 +150,12 @@ def carregar_todos_alertas():
     
     # Carregar cada arquivo separadamente
     gdf_para = carregar_alerta_shapefile("alertas.shp", "Pará")
-    gdf_estados = carregar_alertas_postgres()  # PostgreSQL ao invés de shapefile
+    
+    # Tentar PostgreSQL, usar shapefile local como fallback se falhar
+    gdf_estados = carregar_alertas_postgres()
+    if gdf_estados.empty:
+        gdf_estados = carregar_alerta_shapefile("Filtrado/Alertas_Estados_Restantes.shp", "Estados")
+    
     gdf_ti = carregar_alerta_shapefile("Filtrado/Alertas_Outros.shp", "TI")
     
     # Combinar todos os dataframes

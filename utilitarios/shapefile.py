@@ -271,8 +271,6 @@ def carregar_alertas_postgres() -> gpd.GeoDataFrame:
         
         return gdf
         
-    except Exception as e:
-        st.error(f"❌ Erro ao carregar alertas do PostgreSQL: {str(e)}")
-        import traceback
-        st.text(traceback.format_exc())
+    except Exception:
+        # Falha silenciosa - fallback para shapefile local
         return gpd.GeoDataFrame()
