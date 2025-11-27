@@ -170,9 +170,13 @@ def carregar_car_postgres() -> gpd.GeoDataFrame:
     Retorna GeoDataFrame com mesma estrutura do sigef.shp para compatibilidade.
     """
     try:
+        # Debug: mostrar configuração
+        st.info(f"🔍 Tentando conectar PostgreSQL: {DB_CONFIG['host']}:{DB_CONFIG['port']} como {DB_CONFIG['user']}")
+        
         engine = create_engine(
             f"postgresql://{DB_CONFIG['user']}:{DB_CONFIG['password']}@"
-            f"{DB_CONFIG['host']}:{DB_CONFIG['port']}/{DB_CONFIG['database']}"
+            f"{DB_CONFIG['host']}:{DB_CONFIG['port']}/{DB_CONFIG['database']}",
+            connect_args={'connect_timeout': 10}
         )
         
         query = """
@@ -185,7 +189,9 @@ def carregar_car_postgres() -> gpd.GeoDataFrame:
             FROM extensions."Resultado_CAR_Final"
         """
         
+        st.info("📊 Executando query...")
         gdf = gpd.read_postgis(query, engine, geom_col='geometry')
+        st.success(f"✅ CAR carregado: {len(gdf)} registros")
         
         if gdf.empty:
             st.warning("⚠️ Nenhum dado CAR encontrado no PostgreSQL")
@@ -215,8 +221,8 @@ def carregar_car_postgres() -> gpd.GeoDataFrame:
         
         return gdf
         
-    except Exception:
-        # Falha silenciosa - retorna vazio (CAR não disponível)
+    except Exception as e:
+        st.error(f"❌ Erro PostgreSQL CAR: {type(e).__name__}: {str(e)}")
         return gpd.GeoDataFrame()
 
 
@@ -227,9 +233,12 @@ def carregar_alertas_postgres() -> gpd.GeoDataFrame:
     Tabela: Alertas_Estados_Restantes no mesmo schema/base do CAR.
     """
     try:
+        st.info(f"🔍 Tentando conectar PostgreSQL Alertas: {DB_CONFIG['host']}:{DB_CONFIG['port']}")
+        
         engine = create_engine(
             f"postgresql://{DB_CONFIG['user']}:{DB_CONFIG['password']}@"
-            f"{DB_CONFIG['host']}:{DB_CONFIG['port']}/{DB_CONFIG['database']}"
+            f"{DB_CONFIG['host']}:{DB_CONFIG['port']}/{DB_CONFIG['database']}",
+            connect_args={'connect_timeout': 10}
         )
         
         query = """
@@ -239,7 +248,9 @@ def carregar_alertas_postgres() -> gpd.GeoDataFrame:
             FROM extensions."Alertas_Estados_Restantes"
         """
         
+        st.info("📊 Executando query alertas...")
         gdf = gpd.read_postgis(query, engine, geom_col='geometry')
+        st.success(f"✅ Alertas carregados: {len(gdf)} registros")
         
         if gdf.empty:
             st.warning("⚠️ Nenhum dado de alertas encontrado no PostgreSQL")
@@ -270,6 +281,6 @@ def carregar_alertas_postgres() -> gpd.GeoDataFrame:
         
         return gdf
         
-    except Exception:
-        # Falha silenciosa - fallback para shapefile local
+    except Exception as e:
+        st.error(f"❌ Erro PostgreSQL Alertas: {type(e).__name__}: {str(e)}")
         return gpd.GeoDataFrame()
