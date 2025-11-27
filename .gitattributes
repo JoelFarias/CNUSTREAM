@@ -1,2 +1,7 @@
+*.shp filter=lfs diff=lfs merge=lfs -text
+*.dbf filter=lfs diff=lfs merge=lfs -text
+*.shx filter=lfs diff=lfs merge=lfs -text
+*.prj filter=lfs diff=lfs merge=lfs -text
+*.cpg filter=lfs diff=lfs merge=lfs -text
 Filtrado/Resultado_CAR_Final.* filter=lfs diff=lfs merge=lfs -text
 Filtrado/Alertas_Estados_Restantes.* filter=lfs diff=lfs merge=lfs -text
