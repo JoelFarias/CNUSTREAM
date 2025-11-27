@@ -155,8 +155,8 @@ def preparar_hectares(gdf: gpd.GeoDataFrame) -> gpd.GeoDataFrame:
 @st.cache_resource(show_spinner="Carregando dados do CAR...")
 def carregar_car_postgres() -> gpd.GeoDataFrame:
     """
-    Carrega dados do CAR dos shapefiles locais (Git LFS).
-    Usa cache_resource para dados estáticos que não mudam.
+    Carrega dados do CAR otimizado para Streamlit Cloud.
+    Simplifica geometrias e reduz uso de memória.
     """
     caminho = "Filtrado/Resultado_CAR_Final.shp"
     
@@ -165,25 +165,27 @@ def carregar_car_postgres() -> gpd.GeoDataFrame:
         return gpd.GeoDataFrame()
     
     try:
+        # Carregar shapefile
         gdf = gpd.read_file(caminho)
         
         if gdf.empty:
             st.error(f"❌ Arquivo CAR vazio: {caminho}")
             return gpd.GeoDataFrame()
         
+        # Simplificar geometrias para reduzir memória (~100m tolerância)
+        gdf['geometry'] = gdf['geometry'].simplify(tolerance=0.001, preserve_topology=True)
+        
         if gdf.crs is None:
             gdf.set_crs("EPSG:4674", inplace=True)
         if gdf.crs.to_epsg() != 4326:
             gdf = gdf.to_crs("EPSG:4326")
         
-        gdf["geometry"] = gdf["geometry"].apply(
-            lambda geom: geom.buffer(0) if geom and not geom.is_valid else geom
-        )
-        gdf = gdf[gdf["geometry"].notnull() & gdf["geometry"].is_valid]
+        # Validar geometrias
+        gdf = gdf[gdf['geometry'].notnull() & gdf['geometry'].is_valid].copy()
         gdf['invadindo'] = 'CAR'
         
         if 'num_area' in gdf.columns:
-            gdf['num_area'] = pd.to_numeric(gdf['num_area'], errors='coerce').fillna(0)
+            gdf['num_area'] = pd.to_numeric(gdf['num_area'], errors='coerce').fillna(0).astype('float32')
         
         if 'id' in gdf.columns:
             gdf = gdf.rename(columns={'id': 'id_car'})
@@ -192,4 +194,6 @@ def carregar_car_postgres() -> gpd.GeoDataFrame:
         
     except Exception as e:
         st.error(f"❌ Erro ao carregar CAR: {str(e)}")
+        import traceback
+        st.error(f"Detalhes: {traceback.format_exc()[:500]}")
         return gpd.GeoDataFrame()
