@@ -138,25 +138,20 @@ def carregar_alerta_shapefile(caminho, tipo_origem):
         return gpd.GeoDataFrame()
 
 
-@st.cache_data(ttl=3600, show_spinner=False, max_entries=5)
+@st.cache_resource(show_spinner="Carregando todos os alertas...")
 def carregar_todos_alertas():
     """
-    Carrega todos os arquivos de alertas e combina em um único GeoDataFrame
+    Carrega todos os arquivos de alertas dos shapefiles locais e combina em um único GeoDataFrame.
+    Usa cache_resource para dados estáticos.
     
     Returns:
         GeoDataFrame com todos os alertas combinados
     """
-    from utilitarios.shapefile import carregar_alertas_postgres
     import os
     
-    # Carregar cada arquivo separadamente
+    # Carregar cada arquivo separadamente (APENAS SHAPEFILES LOCAIS)
     gdf_para = carregar_alerta_shapefile("alertas.shp", "Pará")
-    
-    # Tentar PostgreSQL primeiro, depois shapefile local se existir
-    gdf_estados = carregar_alertas_postgres()
-    if gdf_estados.empty and os.path.exists("Filtrado/Alertas_Estados_Restantes.shp"):
-        gdf_estados = carregar_alerta_shapefile("Filtrado/Alertas_Estados_Restantes.shp", "Estados")
-    
+    gdf_estados = carregar_alerta_shapefile("Filtrado/Alertas_Estados_Restantes.shp", "Estados")
     gdf_ti = carregar_alerta_shapefile("Filtrado/Alertas_Outros.shp", "TI")
     
     # Combinar todos os dataframes
