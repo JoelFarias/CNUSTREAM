@@ -3,22 +3,30 @@ import numpy as np
 import pandas as pd
 import geopandas as gpd
 import streamlit as st
-from sqlalchemy import create_engine
-import requests
-from shapely import wkt
+import subprocess
 
-# Configuração PostgreSQL (local)
-DB_CONFIG = {
-    'host': 'db.rjnzsfvxqvygkyusmsan.supabase.co',
-    'port': 5432,
-    'database': 'postgres',
-    'user': 'postgres',
-    'password': 'jB5kgYN6DZF6pdRm'
-}
-
-# Supabase REST API (fallback para IPv6/Cloud)
-SUPABASE_URL = 'https://rjnzsfvxqvygkyusmsan.supabase.co'
-SUPABASE_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InJqbnpzZnZ4cXZ5Z2t5dXNtc2FuIiwicm9sZSI6ImFub24iLCJpYXQiOjE3MzI1NTY3NDAsImV4cCI6MjA0ODEzMjc0MH0.D3AvXN-zvPcGdH1HNLzQSh3qTYFEcAARUbHOg73s0o4'
+def verificar_e_baixar_lfs(caminho: str) -> bool:
+    """
+    Verifica se o arquivo é um ponteiro LFS e tenta baixá-lo se necessário.
+    Retorna True se o arquivo está disponível (real ou já baixado).
+    """
+    if not os.path.exists(caminho):
+        return False
+    
+    # Verificar se é um ponteiro LFS (arquivo muito pequeno)
+    tamanho = os.path.getsize(caminho)
+    if tamanho < 200:  # Ponteiros LFS geralmente têm ~130 bytes
+        try:
+            # Tentar baixar com git lfs pull
+            subprocess.run(['git', 'lfs', 'pull', '--include', caminho], 
+                          check=False, capture_output=True, timeout=30)
+            # Verificar se agora o arquivo é maior
+            novo_tamanho = os.path.getsize(caminho)
+            return novo_tamanho > 1000  # Arquivo real deve ser maior
+        except:
+            return False
+    
+    return True  # Arquivo já está baixado
 
 @st.cache_data
 def carregar_shapefile_cloud_seguro(caminho: str, calcular_percentuais: bool = True, colunas: list[str] = None) -> gpd.GeoDataFrame:
@@ -171,149 +179,89 @@ def preparar_hectares(gdf: gpd.GeoDataFrame) -> gpd.GeoDataFrame:
 @st.cache_data(ttl=3600, show_spinner=False)
 def carregar_car_postgres() -> gpd.GeoDataFrame:
     """
-    Carrega dados do CAR - tenta PostgreSQL, fallback para REST API.
+    Carrega dados do CAR dos shapefiles locais (Git LFS).
+    Mantém nome da função para compatibilidade com código existente.
     """
-    # Tentar PostgreSQL primeiro
-    try:
-        engine = create_engine(
-            f"postgresql://{DB_CONFIG['user']}:{DB_CONFIG['password']}@"
-            f"{DB_CONFIG['host']}:{DB_CONFIG['port']}/{DB_CONFIG['database']}",
-            connect_args={'connect_timeout': 3}
-        )
-        
-        query = """
-            SELECT 
-                id,
-                municipio,
-                cod_estado,
-                num_area,
-                geom as geometry
-            FROM extensions."Resultado_CAR_Final"
-        """
-        
-        gdf = gpd.read_postgis(query, engine, geom_col='geometry')
-        
-        if not gdf.empty:
-            if gdf.crs is None:
-                gdf.set_crs("EPSG:4674", inplace=True)
-            gdf = gdf.to_crs("EPSG:4326")
-            gdf["geometry"] = gdf["geometry"].apply(
-                lambda geom: geom.buffer(0) if geom and not geom.is_valid else geom
-            )
-            gdf = gdf[gdf["geometry"].notnull() & gdf["geometry"].is_valid]
-            gdf['invadindo'] = 'CAR'
-            if 'num_area' in gdf.columns:
-                gdf['num_area'] = pd.to_numeric(gdf['num_area'], errors='coerce').fillna(0)
-            if 'id' in gdf.columns:
-                gdf = gdf.rename(columns={'id': 'id_car'})
-            return gdf
-    except:
-        pass
+    caminho = "Filtrado/Resultado_CAR_Final.shp"
     
-    # Fallback: REST API
-    try:
-        headers = {
-            'apikey': SUPABASE_KEY,
-            'Authorization': f'Bearer {SUPABASE_KEY}',
-            'Prefer': 'return=representation'
-        }
-        
-        response = requests.get(
-            f'{SUPABASE_URL}/rest/v1/Resultado_CAR_Final',
-            headers=headers,
-            params={'select': 'id,municipio,cod_estado,num_area,geom'},
-            timeout=60
-        )
-        
-        if response.status_code == 200:
-            data = response.json()
-            if data:
-                df = pd.DataFrame(data)
-                df['geometry'] = df['geom'].apply(lambda x: wkt.loads(x) if isinstance(x, str) else x)
-                gdf = gpd.GeoDataFrame(df, geometry='geometry', crs='EPSG:4674')
-                gdf = gdf.drop(columns=['geom'], errors='ignore')
-                gdf = gdf.to_crs('EPSG:4326')
-                gdf['invadindo'] = 'CAR'
-                if 'num_area' in gdf.columns:
-                    gdf['num_area'] = pd.to_numeric(gdf['num_area'], errors='coerce').fillna(0)
-                if 'id' in gdf.columns:
-                    gdf = gdf.rename(columns={'id': 'id_car'})
-                return gdf
-    except:
-        pass
+    # Verificar e baixar LFS se necessário
+    if not verificar_e_baixar_lfs(caminho):
+        st.warning(f"⚠️ Arquivo CAR não encontrado ou não pôde ser baixado: {caminho}")
+        return gpd.GeoDataFrame()
     
-    return gpd.GeoDataFrame()
+    try:
+        gdf = gpd.read_file(caminho)
+        
+        if gdf.empty:
+            st.warning(f"⚠️ Arquivo CAR vazio: {caminho}")
+            return gpd.GeoDataFrame()
+        
+        if gdf.crs is None:
+            gdf.set_crs("EPSG:4674", inplace=True)
+        gdf = gdf.to_crs("EPSG:4326")
+        
+        gdf["geometry"] = gdf["geometry"].apply(
+            lambda geom: geom.buffer(0) if geom and not geom.is_valid else geom
+        )
+        gdf = gdf[gdf["geometry"].notnull() & gdf["geometry"].is_valid]
+        gdf['invadindo'] = 'CAR'
+        
+        if 'num_area' in gdf.columns:
+            gdf['num_area'] = pd.to_numeric(gdf['num_area'], errors='coerce').fillna(0)
+        
+        if 'id' in gdf.columns:
+            gdf = gdf.rename(columns={'id': 'id_car'})
+        
+        return gdf
+        
+    except Exception as e:
+        st.error(f"❌ Erro ao carregar CAR: {str(e)}")
+        import traceback
+        st.error(f"Detalhes: {traceback.format_exc()}")
+        return gpd.GeoDataFrame()
 
 
 @st.cache_data(ttl=3600, show_spinner=False)
 def carregar_alertas_postgres() -> gpd.GeoDataFrame:
     """
-    Carrega alertas - tenta PostgreSQL, fallback para REST API.
+    Carrega alertas dos shapefiles locais (Git LFS).
+    Mantém nome da função para compatibilidade com código existente.
     """
-    # Tentar PostgreSQL primeiro
-    try:
-        engine = create_engine(
-            f"postgresql://{DB_CONFIG['user']}:{DB_CONFIG['password']}@"
-            f"{DB_CONFIG['host']}:{DB_CONFIG['port']}/{DB_CONFIG['database']}",
-            connect_args={'connect_timeout': 3}
-        )
-        
-        query = """
-            SELECT 
-                *,
-                geom as geometry
-            FROM extensions."Alertas_Estados_Restantes"
-        """
-        
-        gdf = gpd.read_postgis(query, engine, geom_col='geometry')
-        
-        if not gdf.empty:
-            if gdf.crs is None:
-                gdf.set_crs("EPSG:4674", inplace=True)
-            if gdf.crs.to_epsg() != 4326:
-                gdf = gdf.to_crs("EPSG:4326")
-            gdf["geometry"] = gdf["geometry"].apply(
-                lambda geom: geom.buffer(0) if geom and not geom.is_valid else geom
-            )
-            gdf = gdf[gdf["geometry"].notnull() & gdf["geometry"].is_valid]
-            if 'AREAHA' in gdf.columns:
-                gdf['AREAHA'] = pd.to_numeric(gdf['AREAHA'], errors='coerce').fillna(0)
-            if 'ANODETEC' in gdf.columns:
-                gdf['ANODETEC'] = pd.to_numeric(gdf['ANODETEC'], errors='coerce')
-            gdf['origem'] = 'PostgreSQL - Estados Restantes'
-            return gdf
-    except:
-        pass
+    caminho = "Filtrado/Alertas_Estados_Restantes.shp"
     
-    # Fallback: REST API
-    try:
-        headers = {
-            'apikey': SUPABASE_KEY,
-            'Authorization': f'Bearer {SUPABASE_KEY}',
-            'Prefer': 'return=representation'
-        }
-        
-        response = requests.get(
-            f'{SUPABASE_URL}/rest/v1/Alertas_Estados_Restantes',
-            headers=headers,
-            timeout=60
-        )
-        
-        if response.status_code == 200:
-            data = response.json()
-            if data:
-                df = pd.DataFrame(data)
-                df['geometry'] = df['geom'].apply(lambda x: wkt.loads(x) if isinstance(x, str) else x)
-                gdf = gpd.GeoDataFrame(df, geometry='geometry', crs='EPSG:4674')
-                gdf = gdf.drop(columns=['geom'], errors='ignore')
-                gdf = gdf.to_crs('EPSG:4326')
-                if 'AREAHA' in gdf.columns:
-                    gdf['AREAHA'] = pd.to_numeric(gdf['AREAHA'], errors='coerce').fillna(0)
-                if 'ANODETEC' in gdf.columns:
-                    gdf['ANODETEC'] = pd.to_numeric(gdf['ANODETEC'], errors='coerce')
-                gdf['origem'] = 'PostgreSQL - Estados Restantes'
-                return gdf
-    except:
-        pass
+    # Verificar e baixar LFS se necessário
+    if not verificar_e_baixar_lfs(caminho):
+        st.warning(f"⚠️ Arquivo de alertas não encontrado ou não pôde ser baixado: {caminho}")
+        return gpd.GeoDataFrame()
     
-    return gpd.GeoDataFrame()
+    try:
+        gdf = gpd.read_file(caminho)
+        
+        if gdf.empty:
+            st.warning(f"⚠️ Arquivo de alertas vazio: {caminho}")
+            return gpd.GeoDataFrame()
+        
+        if gdf.crs is None:
+            gdf.set_crs("EPSG:4674", inplace=True)
+        if gdf.crs.to_epsg() != 4326:
+            gdf = gdf.to_crs("EPSG:4326")
+        
+        gdf["geometry"] = gdf["geometry"].apply(
+            lambda geom: geom.buffer(0) if geom and not geom.is_valid else geom
+        )
+        gdf = gdf[gdf["geometry"].notnull() & gdf["geometry"].is_valid]
+        
+        if 'AREAHA' in gdf.columns:
+            gdf['AREAHA'] = pd.to_numeric(gdf['AREAHA'], errors='coerce').fillna(0)
+        if 'ANODETEC' in gdf.columns:
+            gdf['ANODETEC'] = pd.to_numeric(gdf['ANODETEC'], errors='coerce')
+        
+        gdf['origem'] = 'Shapefile - Estados Restantes'
+        
+        return gdf
+        
+    except Exception as e:
+        st.error(f"❌ Erro ao carregar alertas: {str(e)}")
+        import traceback
+        st.error(f"Detalhes: {traceback.format_exc()}")
+        return gpd.GeoDataFrame()
