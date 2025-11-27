@@ -214,10 +214,8 @@ def carregar_car_postgres() -> gpd.GeoDataFrame:
         
         return gdf
         
-    except Exception as e:
-        st.error(f"❌ Erro ao carregar CAR do PostgreSQL: {str(e)}")
-        import traceback
-        st.text(traceback.format_exc())
+    except Exception:
+        # Falha silenciosa - retorna vazio (CAR não disponível)
         return gpd.GeoDataFrame()
 
 

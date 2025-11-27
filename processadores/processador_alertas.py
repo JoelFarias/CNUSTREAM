@@ -147,13 +147,14 @@ def carregar_todos_alertas():
         GeoDataFrame com todos os alertas combinados
     """
     from utilitarios.shapefile import carregar_alertas_postgres
+    import os
     
     # Carregar cada arquivo separadamente
     gdf_para = carregar_alerta_shapefile("alertas.shp", "Pará")
     
-    # Tentar PostgreSQL, usar shapefile local como fallback se falhar
+    # Tentar PostgreSQL primeiro, depois shapefile local se existir
     gdf_estados = carregar_alertas_postgres()
-    if gdf_estados.empty:
+    if gdf_estados.empty and os.path.exists("Filtrado/Alertas_Estados_Restantes.shp"):
         gdf_estados = carregar_alerta_shapefile("Filtrado/Alertas_Estados_Restantes.shp", "Estados")
     
     gdf_ti = carregar_alerta_shapefile("Filtrado/Alertas_Outros.shp", "TI")
