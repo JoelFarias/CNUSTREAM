@@ -11,10 +11,12 @@ def wrap_label(name, width=30):
     return "<br>".join(textwrap.wrap(str(name), width))
 
 def fig_sobreposicoes(gdf_cnuc_ha_filtered):
-    gdf = gdf_cnuc_ha_filtered.copy().sort_values("area_ha", ascending=False)
+    gdf = gdf_cnuc_ha_filtered.copy()
     if gdf.empty:
         return go.Figure()
-
+    
+    # Ordenar por area_ha decrescente
+    gdf = gdf.sort_values("area_ha", ascending=False)
     gdf["uc_short"] = gdf["nome_uc"].apply(lambda x: wrap_label(x, 15))
     
     fig = go.Figure()
@@ -69,6 +71,8 @@ def fig_contagens_uc(gdf_cnuc_filtered: gpd.GeoDataFrame) -> go.Figure:
     gdf = gdf_cnuc_filtered.copy()
     if gdf.empty:
         return go.Figure()
+    
+    # Ordenar por total de contagens decrescente
     gdf["total_counts"] = gdf.get("c_alertas", 0) + gdf.get("c_sigef", 0)
     gdf = gdf.sort_values("total_counts", ascending=False)
     

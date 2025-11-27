@@ -42,24 +42,30 @@ def limpar_dados_estado(valor_estado):
         return siglas_para_estados[estado_str]
     
     nomes_estados = list(siglas_para_estados.values())
-    estado_title = estado_str.title()
     
     correcoes = {
+        'PARA': 'Pará', 'CEARA': 'Ceará', 'ESPIRITO SANTO': 'Espírito Santo',
+        'GOIAS': 'Goiás', 'MARANHAO': 'Maranhão', 'PARAIBA': 'Paraíba',
+        'PARANA': 'Paraná', 'PIAUI': 'Piauí', 'RONDONIA': 'Rondônia',
+        'SAO PAULO': 'São Paulo',
         'Para': 'Pará', 'Ceara': 'Ceará', 'Espirito Santo': 'Espírito Santo',
         'Goias': 'Goiás', 'Maranhao': 'Maranhão', 'Paraiba': 'Paraíba',
         'Parana': 'Paraná', 'Piaui': 'Piauí', 'Rondonia': 'Rondônia',
         'Sao Paulo': 'São Paulo'
     }
     
+    if estado_str in correcoes:
+        return correcoes[estado_str]
+    
+    estado_title = estado_str.title()
     if estado_title in correcoes:
         return correcoes[estado_title]
     
     for nome_valido in nomes_estados:
+        if estado_str == nome_valido.upper() or estado_str.replace(' ', '') == nome_valido.upper().replace(' ', ''):
+            return nome_valido
         if estado_title == nome_valido or estado_title.replace(' ', '') == nome_valido.replace(' ', ''):
             return nome_valido
-    
-    if len(estado_str) > 2:
-        return estado_title
     
     return None
 

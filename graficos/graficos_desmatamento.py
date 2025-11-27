@@ -161,6 +161,12 @@ def fig_desmatamento_mapa_pontos(gdf_alertas_filtered: gpd.GeoDataFrame) -> go.F
     else:
         gdf_map_plot = gdf_map
 
+    # Garantir que AREAHA não tem NaN (substituir por 0.01 para visualização)
+    if 'AREAHA' in gdf_map_plot.columns:
+        gdf_map_plot['AREAHA'] = pd.to_numeric(gdf_map_plot['AREAHA'], errors='coerce').fillna(0.01)
+        # Remover valores zero ou negativos
+        gdf_map_plot = gdf_map_plot[gdf_map_plot['AREAHA'] > 0]
+
     if gdf_map_plot.empty:
         fig = go.Figure()
         fig.update_layout(title="Mapa de Alertas (Desmatamento)")

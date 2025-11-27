@@ -24,7 +24,14 @@ from processadores.processador_desmatamento import (
     obter_anos_disponiveis_desmatamento,
     preprocessar_dados_desmatamento_temporal,
     calcular_bounds_desmatamento,
-    processar_intersecao_uc_desmatamento
+    processar_intersecao_uc_desmatamento,
+    atualizar_alertas_em_ucs
+)
+from processadores.processador_alertas import (
+    carregar_todos_alertas, 
+    filtrar_alertas_por_estado, 
+    filtrar_alertas_por_ano,
+    normalizar_estado
 )
 
 from graficos.graficos_sobreposicoes import fig_sobreposicoes, fig_contagens_uc, fig_car_por_uc_donut
@@ -61,37 +68,160 @@ st.markdown("---")
 
 @st.cache_data(ttl=3600, show_spinner=False, max_entries=1)
 def carregar_dados_iniciais():
-    gdf_alertas_cols = ['ESTADO', 'MUNICIPIO', 'AREAHA', 'ANODETEC', 'DATADETEC', 'CODEALERTA', 'BIOMA', 'VPRESSAO', 'geometry']
-    gdf_cnuc_cols = ['nome_uc', 'municipio', 'area_km2', 'alerta_km2', 'sigef_km2', 'c_alertas', 'c_sigef', 'geometry']
+    gdf_cnuc_cols = ['nome_uc', 'municipio', 'uf', 'area_km2', 'alerta_km2', 'sigef_km2', 'c_alertas', 'c_sigef', 'geometry']
     gdf_sigef_cols = ['invadindo', 'municipio', 'geometry']
     df_proc_cols = ['municipio', 'data_ajuizamento', 'classe', 'assuntos', 'orgao_julgador']
-    
-    gdf_alertas_raw = carregar_shapefile("alertas.shp", calcular_percentuais=False, colunas=gdf_alertas_cols)
-    gdf_alertas_raw = gdf_alertas_raw.rename(columns={"id":"id_alerta"})
-    
+    gdf_alertas_raw = carregar_todos_alertas()
+    if not gdf_alertas_raw.empty:
+        gdf_alertas_raw = gdf_alertas_raw.reset_index(drop=True)
     gdf_cnuc_raw = carregar_shapefile_cloud_seguro("cnuc.shp", colunas=gdf_cnuc_cols)
     gdf_cnuc_ha_raw = preparar_hectares(gdf_cnuc_raw)
     
+    # Processar ESTADO do cnuc - como não tem coluna 'uf', adicionar Pará manualmente
+    if not gdf_cnuc_ha_raw.empty:
+        if 'uf' in gdf_cnuc_ha_raw.columns:
+            gdf_cnuc_ha_raw['ESTADO'] = gdf_cnuc_ha_raw['uf'].apply(normalizar_estado)
+            gdf_cnuc_ha_raw = gdf_cnuc_ha_raw[gdf_cnuc_ha_raw['ESTADO'].notna()].reset_index(drop=True)
+        else:
+            # cnuc.shp é do Pará, adicionar ESTADO manualmente
+            gdf_cnuc_ha_raw['ESTADO'] = 'Pará'
+    
+    # Adicionar tipo_area para identificação
+    if not gdf_cnuc_ha_raw.empty:
+        gdf_cnuc_ha_raw['tipo_area'] = 'UC'
+    
     gdf_sigef_raw = carregar_shapefile("sigef.shp", calcular_percentuais=False, colunas=gdf_sigef_cols)
     gdf_sigef_raw = gdf_sigef_raw.rename(columns={"id":"id_sigef"})
+    
+    if not gdf_sigef_raw.empty:
+        gdf_sigef_raw['ESTADO'] = 'Pará'
+    
     if 'MUNICIPIO' in gdf_sigef_raw.columns and 'municipio' not in gdf_sigef_raw.columns:
         gdf_sigef_raw = gdf_sigef_raw.rename(columns={'MUNICIPIO': 'municipio'})
     elif 'municipio' not in gdf_sigef_raw.columns:
         gdf_sigef_raw['municipio'] = None
+    
+    gdf_ucs_filtradas = carregar_shapefile("Filtrado/UCs_filtradas.shp", calcular_percentuais=False)
+    if not gdf_ucs_filtradas.empty and 'uf' in gdf_ucs_filtradas.columns:
+        gdf_ucs_filtradas['ESTADO'] = gdf_ucs_filtradas['uf'].apply(normalizar_estado)
+        gdf_ucs_filtradas = gdf_ucs_filtradas[gdf_ucs_filtradas['ESTADO'].notna()].reset_index(drop=True)
+        
+        if 'nome_uc' in gdf_ucs_filtradas.columns:
+            gdf_ucs_filtradas['invadindo'] = gdf_ucs_filtradas['nome_uc']
+    
+    gdf_ucs_filtradas = preparar_hectares(gdf_ucs_filtradas)
+    
+    # Adicionar tipo_area para identificação
+    if not gdf_ucs_filtradas.empty:
+        gdf_ucs_filtradas['tipo_area'] = 'UC'
+    
+    # Carregar CAR de outros estados do PostgreSQL
+    from utilitarios.shapefile import carregar_car_postgres
+    gdf_car_filtrado = carregar_car_postgres()
+    
+    if not gdf_car_filtrado.empty and 'cod_estado' in gdf_car_filtrado.columns:
+        gdf_car_filtrado['ESTADO'] = gdf_car_filtrado['cod_estado'].apply(normalizar_estado)
+        gdf_car_filtrado = gdf_car_filtrado[gdf_car_filtrado['ESTADO'].notna()].reset_index(drop=True)
+    
+    gdf_car_filtrado = preparar_hectares(gdf_car_filtrado)
+    
+    gdf_terras_indigenas = carregar_shapefile("Filtrado/TerraIn_filtrado.shp", calcular_percentuais=False)
+    if not gdf_terras_indigenas.empty and 'uf_sigla' in gdf_terras_indigenas.columns:
+        def processar_estados_ti(uf_sigla):
+            if pd.isna(uf_sigla):
+                return None
+            estados = str(uf_sigla).split(',')
+            estados_normalizados = [normalizar_estado(e.strip()) for e in estados]
+            estados_validos = [e for e in estados_normalizados if e is not None]
+            return estados_validos[0] if estados_validos else None
+        
+        gdf_terras_indigenas['ESTADO'] = gdf_terras_indigenas['uf_sigla'].apply(processar_estados_ti)
+        gdf_terras_indigenas = gdf_terras_indigenas[gdf_terras_indigenas['ESTADO'].notna()].reset_index(drop=True)
+        
+        gdf_terras_indigenas = gdf_terras_indigenas[gdf_terras_indigenas['ESTADO'].isin(['Mato Grosso', 'Paraná'])].reset_index(drop=True)
+        
+        if 'terrai_nom' in gdf_terras_indigenas.columns:
+            gdf_terras_indigenas['invadindo'] = gdf_terras_indigenas['terrai_nom']
+        elif 'nome' in gdf_terras_indigenas.columns:
+            gdf_terras_indigenas['invadindo'] = gdf_terras_indigenas['nome']
+        else:
+            gdf_terras_indigenas['invadindo'] = 'Terra Indígena'
+    
+    gdf_terras_indigenas = preparar_hectares(gdf_terras_indigenas)
+    
+    # Adicionar tipo_area para identificação
+    if not gdf_terras_indigenas.empty:
+        gdf_terras_indigenas['tipo_area'] = 'T.I'
     
     limites = gdf_cnuc_raw.total_bounds
     centro = {"lat": (limites[1] + limites[3]) / 2, "lon": (limites[0] + limites[2]) / 2}
     
     df_proc_raw = pd.read_csv("processos_tjpa_completo_atualizada_pronto.csv", sep=";", encoding="windows-1252", usecols=df_proc_cols)
     
-    return gdf_alertas_raw, gdf_cnuc_ha_raw, gdf_sigef_raw, centro, df_proc_raw
+    return gdf_alertas_raw, gdf_cnuc_ha_raw, gdf_sigef_raw, centro, df_proc_raw, gdf_ucs_filtradas, gdf_car_filtrado, gdf_terras_indigenas
 
 try:
-    gdf_alertas_raw, gdf_cnuc_raw, gdf_sigef_raw, centro, df_proc_raw = carregar_dados_iniciais()
-    st.success("✅ Dados carregados com sucesso!")
+    gdf_alertas_raw, gdf_cnuc_raw, gdf_sigef_raw, centro, df_proc_raw, gdf_ucs_filtradas, gdf_car_filtrado, gdf_terras_indigenas = carregar_dados_iniciais()
 except Exception as e:
     st.error(f"❌ Erro ao carregar dados: {e}")
     st.stop()
+
+# ===== PREPARAR DATASETS COMBINADOS (DISPONÍVEIS PARA TODAS AS ABAS) =====
+gdf_sigef_combinado = pd.concat([gdf_sigef_raw.reset_index(drop=True), gdf_car_filtrado.reset_index(drop=True)], ignore_index=True)
+if not gdf_sigef_combinado.empty and 'ESTADO' not in gdf_sigef_combinado.columns:
+    gdf_sigef_combinado['ESTADO'] = None
+
+# Calcular sigef_km2 e c_sigef para UCs filtradas através de intersecção com CAR
+if not gdf_ucs_filtradas.empty and not gdf_car_filtrado.empty:
+    try:
+        ucs_proj = gdf_ucs_filtradas.to_crs(epsg=31983)
+        car_proj = gdf_car_filtrado.to_crs(epsg=31983)
+        
+        for idx, uc_row in gdf_ucs_filtradas.iterrows():
+            if 'nome_uc' in uc_row and pd.notna(uc_row['nome_uc']):
+                uc_geom = ucs_proj.loc[idx, 'geometry']
+                car_intersect = car_proj[car_proj.intersects(uc_geom)]
+                
+                if not car_intersect.empty:
+                    area_car_ha = car_proj.loc[car_intersect.index, 'num_area'].sum()
+                    contagem_car = len(car_intersect)
+                    gdf_ucs_filtradas.at[idx, 'sigef_km2'] = area_car_ha / 100
+                    gdf_ucs_filtradas.at[idx, 'c_sigef'] = contagem_car
+        
+        gdf_ucs_filtradas = preparar_hectares(gdf_ucs_filtradas)
+    except Exception as e:
+        st.warning(f"Aviso: Não foi possível calcular áreas de CAR: {str(e)}")
+
+# Combinar UCs (Pará + Filtradas)
+gdf_cnuc_combinado = pd.concat([gdf_cnuc_raw.reset_index(drop=True), gdf_ucs_filtradas.reset_index(drop=True)], ignore_index=True)
+
+# Incluir Terras Indígenas
+if not gdf_terras_indigenas.empty:
+    gdf_ti_como_uc = gdf_terras_indigenas.copy()
+    
+    if 'nome_uc' not in gdf_ti_como_uc.columns:
+        if 'terrai_nom' in gdf_ti_como_uc.columns:
+            gdf_ti_como_uc['nome_uc'] = 'TI - ' + gdf_ti_como_uc['terrai_nom'].astype(str)
+        elif 'nome' in gdf_ti_como_uc.columns:
+            gdf_ti_como_uc['nome_uc'] = 'TI - ' + gdf_ti_como_uc['nome'].astype(str)
+        else:
+            gdf_ti_como_uc['nome_uc'] = 'Terra Indígena'
+    else:
+        gdf_ti_como_uc['nome_uc'] = 'TI - ' + gdf_ti_como_uc['nome_uc'].astype(str)
+    
+    if 'municipio' not in gdf_ti_como_uc.columns:
+        gdf_ti_como_uc['municipio'] = None
+    
+    gdf_ti_como_uc['tipo_area'] = 'T.I'
+    gdf_cnuc_combinado = pd.concat([gdf_cnuc_combinado.reset_index(drop=True), gdf_ti_como_uc.reset_index(drop=True)], ignore_index=True)
+
+if not gdf_cnuc_combinado.empty and 'nome_uc' in gdf_cnuc_combinado.columns and 'tipo_area' in gdf_cnuc_combinado.columns:
+    gdf_cnuc_combinado = gdf_cnuc_combinado.drop_duplicates(subset=['nome_uc', 'tipo_area'])
+
+if not gdf_cnuc_combinado.empty:
+    for col in ['ha_total', 'num_area', 'alerta_km2', 'sigef_km2', 'area_km2']:
+        if col in gdf_cnuc_combinado.columns:
+            gdf_cnuc_combinado[col] = pd.to_numeric(gdf_cnuc_combinado[col], errors='coerce').fillna(0)
 
 tabs = st.tabs(["Sobreposições", "CPT", "Justiça", "Queimadas", "Desmatamento"])
 
@@ -111,24 +241,54 @@ with tabs[0]:
             unsafe_allow_html=True
         )
 
-    perc_alerta, perc_sigef, total_unidades, contagem_alerta, contagem_sigef = criar_cards(gdf_cnuc_raw, gdf_sigef_raw, None)
+    perc_alerta, perc_sigef, total_unidades, contagem_alerta, contagem_sigef = criar_cards(gdf_cnuc_combinado, gdf_sigef_combinado, None)
     
-    col_f1, col_f2 = st.columns(2)
+    st.markdown("### Filtros")
+    col_f1, col_f2, col_f3 = st.columns(3)
+    
     with col_f1:
-        ucs_disponiveis = ['Todas'] + list(gdf_cnuc_raw['nome_uc'].unique()) if not gdf_cnuc_raw.empty and 'nome_uc' in gdf_cnuc_raw.columns else ['Todas']
-        uc_selecionada = st.selectbox('Filtrar por UC:', ucs_disponiveis, key="filtro_uc")
+        # cnuc.shp não tem coluna de estado, então adicionar Pará manualmente
+        estados_cnuc = ['Pará'] if not gdf_cnuc_raw.empty else []
+        estados_ucs = sorted(gdf_ucs_filtradas['ESTADO'].dropna().unique().tolist()) if not gdf_ucs_filtradas.empty and 'ESTADO' in gdf_ucs_filtradas.columns else []
+        estados_ti_raw = sorted(gdf_terras_indigenas['ESTADO'].dropna().unique().tolist()) if not gdf_terras_indigenas.empty and 'ESTADO' in gdf_terras_indigenas.columns else []
+        
+        # Adicionar sufixo (T.I) aos estados de TerraIn_filtrado
+        estados_ti = [f"{estado} (T.I)" for estado in estados_ti_raw]
+        
+        todos_estados = set(estados_cnuc + estados_ucs + estados_ti)
+        estados_disponiveis = sorted([e for e in todos_estados if e])
+        if not estados_disponiveis:
+            estados_disponiveis = ['Pará']
+        estado_selecionado = st.selectbox('Filtrar por Estado:', estados_disponiveis, index=0, key="filtro_estado_sobreposicao")
+    
     with col_f2:
-        estados_disponiveis = ['Todos'] + list(gdf_alertas_raw['ESTADO'].unique()) if not gdf_alertas_raw.empty and 'ESTADO' in gdf_alertas_raw.columns else ['Todos']
-        estado_selecionado = st.selectbox('Filtrar por Estado:', estados_disponiveis, key="filtro_estado")
+        tipo_area_selecionado = st.selectbox('Filtrar por Tipo:', ['Todos', 'UC', 'T.I'], key="filtro_tipo_area")
     
-    gdf_cnuc_filtrado = gdf_cnuc_raw.copy()
-    gdf_alertas_filtrado_cards = gdf_alertas_raw.copy()
+    with col_f3:
+        # Filtrar por tipo antes de montar o dropdown de UCs/TIs
+        gdf_para_dropdown = gdf_cnuc_combinado.copy()
+        if tipo_area_selecionado != 'Todos' and 'tipo_area' in gdf_para_dropdown.columns:
+            gdf_para_dropdown = gdf_para_dropdown[gdf_para_dropdown['tipo_area'] == tipo_area_selecionado]
+        
+        ucs_disponiveis = ['Todas'] + sorted(gdf_para_dropdown['nome_uc'].unique().tolist()) if not gdf_para_dropdown.empty and 'nome_uc' in gdf_para_dropdown.columns else ['Todas']
+        uc_selecionada = st.selectbox('Filtrar por UC/TI:', ucs_disponiveis, key="filtro_uc")
     
+    # Aplicar filtro de estado
+    # Remover sufixo (T.I) se existir para comparação
+    estado_para_filtro = estado_selecionado.replace(' (T.I)', '') if estado_selecionado.endswith(' (T.I)') else estado_selecionado
+    
+    gdf_cnuc_filtrado = gdf_cnuc_combinado[gdf_cnuc_combinado['ESTADO'] == estado_para_filtro].copy() if 'ESTADO' in gdf_cnuc_combinado.columns and not gdf_cnuc_combinado.empty else gdf_cnuc_combinado.copy()
+    gdf_alertas_filtrado_cards = gdf_alertas_raw[gdf_alertas_raw['ESTADO'] == estado_para_filtro].copy() if not gdf_alertas_raw.empty and 'ESTADO' in gdf_alertas_raw.columns else gpd.GeoDataFrame()
+    gdf_sigef_filtrado = gdf_sigef_combinado[gdf_sigef_combinado['ESTADO'] == estado_para_filtro].copy() if 'ESTADO' in gdf_sigef_combinado.columns and not gdf_sigef_combinado.empty else gdf_sigef_combinado.copy()
+    gdf_ti_filtrado = gdf_terras_indigenas[gdf_terras_indigenas['ESTADO'] == estado_para_filtro].copy() if not gdf_terras_indigenas.empty and 'ESTADO' in gdf_terras_indigenas.columns else gpd.GeoDataFrame()
+    
+    # Aplicar filtro de tipo (UC ou T.I)
+    if tipo_area_selecionado != 'Todos' and 'tipo_area' in gdf_cnuc_filtrado.columns:
+        gdf_cnuc_filtrado = gdf_cnuc_filtrado[gdf_cnuc_filtrado['tipo_area'] == tipo_area_selecionado]
+    
+    # Aplicar filtro de UC/TI específica
     if uc_selecionada != 'Todas':
-        gdf_cnuc_filtrado = gdf_cnuc_filtrado[gdf_cnuc_filtrado['nome_uc'] == uc_selecionada]
-    
-    if estado_selecionado != 'Todos':
-        gdf_alertas_filtrado_cards = gdf_alertas_filtrado_cards[gdf_alertas_filtrado_cards['ESTADO'] == estado_selecionado]
+        gdf_cnuc_filtrado = gdf_cnuc_filtrado[gdf_cnuc_filtrado['nome_uc'] == uc_selecionada] if not gdf_cnuc_filtrado.empty else gdf_cnuc_filtrado
     
     total_ucs = len(gdf_cnuc_filtrado) if not gdf_cnuc_filtrado.empty else 0
 
@@ -139,10 +299,33 @@ with tabs[0]:
     if not gdf_cnuc_filtrado.empty:
         if 'ha_total' in gdf_cnuc_filtrado.columns:
             area_total_ucs = gdf_cnuc_filtrado['ha_total'].sum()
-        if 'alerta_km2' in gdf_cnuc_filtrado.columns:
-            area_alertas_ucs = gdf_cnuc_filtrado['alerta_km2'].sum() * 100 
-        if 'sigef_km2' in gdf_cnuc_filtrado.columns:
-            area_cars_ucs = gdf_cnuc_filtrado['sigef_km2'].sum() * 100  
+        elif 'num_area' in gdf_cnuc_filtrado.columns:
+            area_total_ucs = gdf_cnuc_filtrado['num_area'].sum()
+        elif 'area_km2' in gdf_cnuc_filtrado.columns:
+            area_total_ucs = gdf_cnuc_filtrado['area_km2'].sum() * 100
+        else:
+            try:
+                area_total_ucs = gdf_cnuc_filtrado.to_crs(epsg=31983).geometry.area.sum() / 10000
+            except:
+                area_total_ucs = 0
+        
+        try:
+            gdf_cnuc_proj = gdf_cnuc_filtrado.to_crs(epsg=31983)
+            
+            if not gdf_alertas_filtrado_cards.empty:
+                gdf_alertas_proj = gdf_alertas_filtrado_cards.to_crs(epsg=31983)
+                intersecao_alertas = gpd.overlay(gdf_cnuc_proj, gdf_alertas_proj, how='intersection')
+                area_alertas_ucs = intersecao_alertas.geometry.area.sum() / 10000 if not intersecao_alertas.empty else 0
+            
+            if not gdf_sigef_filtrado.empty:
+                gdf_sigef_proj = gdf_sigef_filtrado.to_crs(epsg=31983)
+                intersecao_cars = gpd.overlay(gdf_cnuc_proj, gdf_sigef_proj, how='intersection')
+                area_cars_ucs = intersecao_cars.geometry.area.sum() / 10000 if not intersecao_cars.empty else 0
+        except Exception as e:
+            if 'alerta_km2' in gdf_cnuc_filtrado.columns:
+                area_alertas_ucs = gdf_cnuc_filtrado['alerta_km2'].sum() * 100
+            if 'sigef_km2' in gdf_cnuc_filtrado.columns:
+                area_cars_ucs = gdf_cnuc_filtrado['sigef_km2'].sum() * 100  
     
     try:
         area_total_ucs = float(area_total_ucs) if pd.notna(area_total_ucs) else 0
@@ -153,17 +336,36 @@ with tabs[0]:
         area_alertas_ucs = 0
         area_cars_ucs = 0
     
-    municipios_para = ['Altamira', 'São Félix do Xingu', 'Itaituba', 'Jacareacanga', 'Novo Progresso', 'Trairão']
-    if estado_selecionado == 'PA' or estado_selecionado == 'Pará':
-        total_municipios = 6  
-    elif estado_selecionado == 'Todos':
-        total_municipios = 6  
-    else:
-        total_municipios = len(gdf_alertas_filtrado_cards['MUNICIPIO'].unique()) if not gdf_alertas_filtrado_cards.empty and 'MUNICIPIO' in gdf_alertas_filtrado_cards.columns else 0
+    # Calcular total de municípios únicos combinando todas as fontes
+    municipios_set = set()
+    
+    # Adicionar municípios dos alertas
+    if not gdf_alertas_filtrado_cards.empty and 'MUNICIPIO' in gdf_alertas_filtrado_cards.columns:
+        municipios_alertas = gdf_alertas_filtrado_cards['MUNICIPIO'].dropna().astype(str)
+        for mun in municipios_alertas:
+            if mun.strip():
+                municipios_set.add(mun.strip().upper())
+    
+    # Adicionar municípios das UCs (podem ter múltiplos separados por vírgula/ponto-e-vírgula)
+    if not gdf_cnuc_filtrado.empty and 'municipio' in gdf_cnuc_filtrado.columns:
+        municipios_cnuc = gdf_cnuc_filtrado['municipio'].dropna().astype(str)
+        for mun in municipios_cnuc:
+            for m in str(mun).replace(';', ',').split(','):
+                if m.strip():
+                    municipios_set.add(m.strip().upper())
+    
+    # Adicionar municípios do SIGEF/CAR
+    if not gdf_sigef_filtrado.empty and 'municipio' in gdf_sigef_filtrado.columns:
+        municipios_sigef = gdf_sigef_filtrado['municipio'].dropna().astype(str)
+        for mun in municipios_sigef:
+            if mun.strip():
+                municipios_set.add(mun.strip().upper())
+    
+    total_municipios = len(municipios_set)
     
     alertas_municipios = len(gdf_alertas_filtrado_cards) if not gdf_alertas_filtrado_cards.empty else 0
     area_alertas_municipios = gdf_alertas_filtrado_cards['AREAHA'].sum() if not gdf_alertas_filtrado_cards.empty and 'AREAHA' in gdf_alertas_filtrado_cards.columns else 0
-    cars_municipios = len(gdf_sigef_raw) if not gdf_sigef_raw.empty else 0
+    cars_municipios = len(gdf_sigef_filtrado) if not gdf_sigef_filtrado.empty else 0
     
     try:
         area_alertas_municipios = float(area_alertas_municipios) if pd.notna(area_alertas_municipios) else 0
@@ -199,14 +401,14 @@ with tabs[0]:
     for col, (t, v, d) in zip(cols_uc, titulos_uc):
         col.markdown(card_template.format(t, v, d), unsafe_allow_html=True)
     
-    titulo_regiao = f"### {estado_selecionado if estado_selecionado != 'Todos' else 'Municípios'}:"
+    titulo_regiao = f"### {estado_selecionado}:"
     st.markdown(titulo_regiao)
     cols_mun = st.columns(4, gap="small")
     titulos_mun = [
-        ("Municípios", formatar_numero_seguro(total_municipios, 0), f"Municípios em {estado_selecionado if estado_selecionado != 'Todos' else 'todos os estados'}"),
-        ("Alertas Totais", formatar_numero_seguro(alertas_municipios, 0), f"Alertas em {estado_selecionado if estado_selecionado != 'Todos' else 'todos os estados'}"),
+        ("Municípios", formatar_numero_seguro(total_municipios, 0), f"Municípios em {estado_selecionado}"),
+        ("Alertas Totais", formatar_numero_seguro(alertas_municipios, 0), f"Alertas em {estado_selecionado}"),
         ("Área Alertas (ha)", formatar_numero_seguro(area_alertas_municipios, 1), "Área total de alertas (ha)"),
-        ("CARs Totais", formatar_numero_seguro(cars_municipios, 0), f"CARs em {estado_selecionado if estado_selecionado != 'Todos' else 'todos os estados'}")
+        ("CARs Totais", formatar_numero_seguro(cars_municipios, 0), f"CARs em {estado_selecionado}")
     ]
     for col, (t, v, d) in zip(cols_mun, titulos_mun):
         col.markdown(card_template.format(t, v, d), unsafe_allow_html=True)
@@ -215,29 +417,38 @@ with tabs[0]:
 
     row1_map, row1_chart1 = st.columns([3, 2], gap="large")
     with row1_map:
-        opcoes_invadindo = ["Selecione", "Todos"] + sorted(gdf_sigef_raw["invadindo"].str.strip().unique().tolist())
-        invadindo_opcao_temp = st.selectbox("Tipo de sobreposição:", opcoes_invadindo, index=0, help="Selecione o tipo de área sobreposta para análise")
-        invadindo_opcao = None if invadindo_opcao_temp == "Selecione" else invadindo_opcao_temp
-        gdf_cnuc_map = gdf_cnuc_raw.copy()
-        gdf_sigef_map = gdf_sigef_raw.copy()
+        if not gdf_cnuc_filtrado.empty and 'nome_uc' in gdf_cnuc_filtrado.columns:
+            ucs_disponiveis = sorted(gdf_cnuc_filtrado['nome_uc'].dropna().unique().tolist())
+            opcoes_uc = ["Selecione", "Todas"] + ucs_disponiveis
+        else:
+            opcoes_uc = ["Selecione", "Todas"]
+        uc_selecionada = st.selectbox("Área de Conservação:", opcoes_uc, index=0, help="Selecione uma área de conservação para destacar no mapa")
+        
+        gdf_cnuc_map = gdf_cnuc_filtrado.copy()
+        gdf_sigef_map = gdf_sigef_filtrado.copy()
         ids_selecionados_map = []
 
-        if invadindo_opcao and invadindo_opcao.lower() != "todos":
-            sigef_filtered_for_sjoin = gdf_sigef_map[gdf_sigef_map["invadindo"].str.strip().str.lower() == invadindo_opcao.lower()]
-            if not sigef_filtered_for_sjoin.empty:
-                 gdf_cnuc_proj_sjoin = gdf_cnuc_map.to_crs(sigef_filtered_for_sjoin.crs)
-                 gdf_filtrado_map = gpd.sjoin(gdf_cnuc_proj_sjoin, sigef_filtered_for_sjoin, how="inner", predicate="intersects")
-                 if "id" in gdf_filtrado_map.columns:
-                     ids_selecionados_map = gdf_filtrado_map["id"].unique().tolist()
-                 elif "nome_uc" in gdf_filtrado_map.columns:
-                     ids_selecionados_map = gdf_filtrado_map["nome_uc"].unique().tolist()
-                 else:
-                     ids_selecionados_map = gdf_filtrado_map.index.unique().tolist()
-            else:
-                 ids_selecionados_map = [] 
+        # Filtrar CARs pela UC selecionada através de intersecção geométrica
+        if uc_selecionada and uc_selecionada not in ["Selecione", "Todas"]:
+            if 'nome_uc' in gdf_cnuc_map.columns:
+                ids_selecionados_map = gdf_cnuc_map[gdf_cnuc_map["nome_uc"] == uc_selecionada]["nome_uc"].unique().tolist()
+                
+                # Filtrar CARs que intersectam com a UC selecionada
+                uc_geom = gdf_cnuc_map[gdf_cnuc_map["nome_uc"] == uc_selecionada]
+                if not uc_geom.empty and not gdf_sigef_map.empty:
+                    try:
+                        # Garantir mesmo CRS
+                        if uc_geom.crs != gdf_sigef_map.crs:
+                            gdf_sigef_map = gdf_sigef_map.to_crs(uc_geom.crs)
+                        # Filtrar CARs que intersectam a UC
+                        gdf_sigef_map = gdf_sigef_map[gdf_sigef_map.intersects(uc_geom.unary_union)]
+                    except Exception as e:
+                        st.warning(f"Aviso ao filtrar CARs: {e}")
 
         st.subheader("Mapa de Unidades")
-        fig_map = criar_figura(gdf_cnuc_map, gdf_sigef_map, None, centro, ids_selecionados_map, invadindo_opcao)
+        # Passar "todos" se há CARs filtrados para exibir
+        invadindo_para_mapa = "todos" if (uc_selecionada not in ["Selecione", "Todas"] and not gdf_sigef_map.empty) else None
+        fig_map = criar_figura(gdf_cnuc_map, gdf_sigef_map, None, centro, ids_selecionados_map, invadindo_para_mapa)
         fig_map.update_layout(height=300)
         st.plotly_chart(
             fig_map,
@@ -259,11 +470,11 @@ with tabs[0]:
             """)
 
         st.subheader("Proporção da Área do CAR sobre a UC")
-        uc_names = ["Todas"] + sorted(gdf_cnuc_raw["nome_uc"].unique())
+        uc_names = ["Todas"] + sorted(gdf_cnuc_filtrado["nome_uc"].unique()) if not gdf_cnuc_filtrado.empty and 'nome_uc' in gdf_cnuc_filtrado.columns else ["Todas"]
         nome_uc = st.selectbox("Selecione a Unidade de Conservação:", uc_names)
         modo_input = st.radio("Mostrar valores como:", ["Hectares (ha)", "% da UC"], horizontal=True)
         modo = "absoluto" if modo_input == "Hectares (ha)" else "percent"
-        fig = fig_car_por_uc_donut(gdf_cnuc_raw, nome_uc, modo)
+        fig = fig_car_por_uc_donut(gdf_cnuc_filtrado, nome_uc, modo)
         st.plotly_chart(fig, use_container_width=True)
         st.caption("Figura 1.2: Comparação entre área do CAR e área restante da UC.")
         with st.expander("Detalhes e Fonte da Figura 1.2"):
@@ -280,8 +491,11 @@ with tabs[0]:
             """)
 
     with row1_chart1:
+        # Atualizar valores de alertas nas UCs com base nos alertas filtrados
+        gdf_cnuc_com_alertas = atualizar_alertas_em_ucs(gdf_cnuc_filtrado, gdf_alertas_filtrado_cards)
+        
         st.subheader("Áreas por UC")
-        st.plotly_chart(fig_sobreposicoes(gdf_cnuc_raw), use_container_width=True, config={'displayModeBar': True})
+        st.plotly_chart(fig_sobreposicoes(gdf_cnuc_com_alertas), use_container_width=True, config={'displayModeBar': True})
         st.caption("Figura 1.3: Distribuição de áreas por unidade de conservação.")
         with st.expander("Detalhes e Fonte da Figura 1.3"):
             st.write("""
@@ -297,7 +511,7 @@ with tabs[0]:
             """)
 
         st.subheader("Contagens por UC")
-        st.plotly_chart(fig_contagens_uc(gdf_cnuc_raw), use_container_width=True, config={'displayModeBar': True})
+        st.plotly_chart(fig_contagens_uc(gdf_cnuc_com_alertas), use_container_width=True, config={'displayModeBar': True}, key="plotly_contagens_uc_sobreposicoes")
         st.caption("Figura 1.4: Contagem de sobreposições por unidade de conservação.")
         with st.expander("Detalhes e Fonte da Figura 1.4"):
             st.write("""
@@ -313,22 +527,25 @@ with tabs[0]:
             """)
 
     st.markdown("""<div style="background-color: #fff; border-radius: 6px; padding: 1.5rem; box-shadow: 0 2px 4px rgba(0,0,0,0.1); margin-bottom: 0.5rem;">
-        <h3 style="color: #1E1E1E; margin-top: 0; margin-bottom: 0.5rem;">Tabela Unificada</h3>
-        <p style="color: #666; font-size: 0.95em; margin-bottom:0;">Visualização unificada dos dados de alertas e CNUC.</p>
+        <h3 style="color: #1E1E1E; margin-top: 0; margin-bottom: 0.5rem;">Tabela de Sobreposições</h3>
+        <p style="color: #666; font-size: 0.95em; margin-bottom:0;">Visualização detalhada das sobreposições de alertas e CAR sobre as UCs.</p>
     </div>""", unsafe_allow_html=True)
-    mostrar_tabela_unificada(gdf_alertas_raw, gdf_sigef_raw, gdf_cnuc_raw)
-    st.caption("Tabela 1.1: Dados consolidados por município.")
+    mostrar_tabela_unificada(gdf_alertas_raw, gdf_sigef_combinado, gdf_cnuc_combinado)
+    st.caption("Tabela 1.1: Dados de sobreposições por UC.")
     with st.expander("Detalhes e Fonte da Tabela 1.1"):
         st.write("""
         **Interpretação:**
-        A tabela apresenta os dados consolidados por município, incluindo:
-        - Área de alertas em hectares
-        - Área do CNUC em hectares
+        A tabela apresenta os dados de sobreposições por Unidade de Conservação, incluindo:
+        - Área da UC em hectares
+        - Área de alertas sobrepostos em hectares
+        - Quantidade de alertas
+        - Área de CAR sobreposto em hectares
+        - Quantidade de CARs
 
         **Observações:**
-        - Valores em hectares
-        - Totais na última linha
-        - Células coloridas por tipo de dado
+        - Valores calculados via intersecção geométrica
+        - Ordenado por área de UC decrescente
+        - Valores formatados com separadores de milhar
 
         **Fonte:** MMA - Ministério do Meio Ambiente. *Cadastro Nacional de Unidades de Conservação*. Brasília: MMA, 2025. Disponível em: https://www.gov.br/mma/. Acesso em: maio de 2025.
         """)
@@ -340,27 +557,27 @@ with tabs[0]:
     
     with dados_tabs[0]:
         st.markdown("**Dados brutos de alertas de desmatamento:**")
-        if not gdf_alertas_raw.empty:
-            df_alertas_display = gdf_alertas_raw.drop(columns=['geometry']) if 'geometry' in gdf_alertas_raw.columns else gdf_alertas_raw
+        if not gdf_alertas_filtrado_cards.empty:
+            df_alertas_display = gdf_alertas_filtrado_cards.drop(columns=['geometry']) if 'geometry' in gdf_alertas_filtrado_cards.columns else gdf_alertas_filtrado_cards
             st.dataframe(df_alertas_display, use_container_width=True, hide_index=True)
         else:
-            st.info("Nenhum dado de alertas disponível.")
+            st.info("Nenhum dado de alertas disponível para o filtro selecionado.")
     
     with dados_tabs[1]:
         st.markdown("**Dados brutos das Unidades de Conservação:**")
-        if not gdf_cnuc_raw.empty:
-            df_cnuc_display = gdf_cnuc_raw.drop(columns=['geometry']) if 'geometry' in gdf_cnuc_raw.columns else gdf_cnuc_raw
+        if not gdf_cnuc_filtrado.empty:
+            df_cnuc_display = gdf_cnuc_filtrado.drop(columns=['geometry']) if 'geometry' in gdf_cnuc_filtrado.columns else gdf_cnuc_filtrado
             st.dataframe(df_cnuc_display, use_container_width=True, hide_index=True)
         else:
-            st.info("Nenhum dado de UCs disponível.")
+            st.info("Nenhum dado de UCs disponível para o filtro selecionado.")
     
     with dados_tabs[2]:
-        st.markdown("**Dados brutos do SIGEF:**")
-        if not gdf_sigef_raw.empty:
-            df_sigef_display = gdf_sigef_raw.drop(columns=['geometry']) if 'geometry' in gdf_sigef_raw.columns else gdf_sigef_raw
+        st.markdown("**Dados brutos do SIGEF/CAR:**")
+        if not gdf_sigef_filtrado.empty:
+            df_sigef_display = gdf_sigef_filtrado.drop(columns=['geometry']) if 'geometry' in gdf_sigef_filtrado.columns else gdf_sigef_filtrado
             st.dataframe(df_sigef_display, use_container_width=True, hide_index=True)
         else:
-            st.info("Nenhum dado do SIGEF disponível.")
+            st.info("Nenhum dado do SIGEF/CAR disponível para o filtro selecionado.")
 
 with tabs[1]:
     st.header("Impacto Social - CPT")
@@ -481,7 +698,22 @@ with tabs[1]:
             if estado_str == nome_completo.upper():
                 return nome_completo
         
-        return estado_str.title()
+        correcoes = {
+            'PARA': 'Pará', 'CEARA': 'Ceará', 'ESPIRITO SANTO': 'Espírito Santo',
+            'GOIAS': 'Goiás', 'MARANHAO': 'Maranhão', 'PARAIBA': 'Paraíba',
+            'PARANA': 'Paraná', 'PIAUI': 'Piauí', 'RONDONIA': 'Rondônia',
+            'SAO PAULO': 'São Paulo'
+        }
+        
+        if estado_str in correcoes:
+            return correcoes[estado_str]
+        
+        nomes_validos = list(siglas_para_estados.values())
+        for nome_valido in nomes_validos:
+            if estado_str == nome_valido.upper() or estado_str.replace(' ', '') == nome_valido.upper().replace(' ', ''):
+                return nome_valido
+        
+        return None
     
     estados_disponiveis_cpt = []
     for tabela_key, df_tabela in cpt_data.items():
@@ -494,13 +726,13 @@ with tabs[1]:
                     break
     
     estados_disponiveis_cpt = [estado for estado in set(estados_disponiveis_cpt) if estado and isinstance(estado, str)]
-    estados_disponiveis_cpt = ['Todos'] + sorted(estados_disponiveis_cpt)
+    estados_disponiveis_cpt = sorted(estados_disponiveis_cpt)
     
-    if len(estados_disponiveis_cpt) > 1:
+    if len(estados_disponiveis_cpt) > 0:
         st.markdown("### Filtros")
-        estado_selecionado_cpt = st.selectbox('Filtrar por Estado:', estados_disponiveis_cpt, key="filtro_estado_cpt")
+        estado_selecionado_cpt = st.selectbox('Filtrar por Estado:', estados_disponiveis_cpt, index=0, key="filtro_estado_cpt")
         
-        if estado_selecionado_cpt != "Todos":
+        if estado_selecionado_cpt:
             cpt_data_filtrado = {}
             for tabela_key, df_tabela in cpt_data.items():
                 if not df_tabela.empty:
@@ -520,10 +752,6 @@ with tabs[1]:
             cpt_processed_data = processar_dados_cpt_por_municipios(cpt_data_filtrado)
             df_summary = cpt_processed_data['municipios_summary']
             cpt_data_final = cpt_data_filtrado
-        else:
-            cpt_processed_data = processar_dados_cpt_por_municipios(cpt_data)
-            df_summary = cpt_processed_data['municipios_summary']
-            cpt_data_final = cpt_data
     else:
         cpt_processed_data = processar_dados_cpt_por_municipios(cpt_data)
         df_summary = cpt_processed_data['municipios_summary']
@@ -1010,13 +1238,37 @@ with tabs[2]:
         unsafe_allow_html=True
     )
     
-    if 'data_ajuizamento' in df_proc_raw.columns:
-        df_proc_raw['data_ajuizamento'] = pd.to_datetime(df_proc_raw['data_ajuizamento'], errors='coerce')
-    if 'ultima_atualizaçao' in df_proc_raw.columns:
-        df_proc_raw['ultima_atualizaçao'] = pd.to_datetime(df_proc_raw['ultima_atualizaçao'], errors='coerce')
+    col_estado = None
+    df_proc_filtrado = df_proc_raw.copy()
+    
+    if 'estado' in df_proc_raw.columns:
+        col_estado = 'estado'
+    elif 'Estado' in df_proc_raw.columns:
+        col_estado = 'Estado'
+    elif 'ESTADO' in df_proc_raw.columns:
+        col_estado = 'ESTADO'
+    elif 'uf' in df_proc_raw.columns:
+        col_estado = 'uf'
+    elif 'UF' in df_proc_raw.columns:
+        col_estado = 'UF'
+    
+    if col_estado:
+        estados_justica = df_proc_raw[col_estado].apply(normalizar_estado).dropna().unique()
+        if len(estados_justica) > 0:
+            estados_justica_lista = sorted(estados_justica.tolist())
+            
+            st.markdown("### Filtros")
+            estado_justica = st.selectbox('Filtrar por Estado:', estados_justica_lista, index=0, key="filtro_estado_justica")
+            
+            df_proc_filtrado = df_proc_raw[df_proc_raw[col_estado].apply(normalizar_estado) == estado_justica].copy()
+    
+    if 'data_ajuizamento' in df_proc_filtrado.columns:
+        df_proc_filtrado['data_ajuizamento'] = pd.to_datetime(df_proc_filtrado['data_ajuizamento'], errors='coerce')
+    if 'ultima_atualizaçao' in df_proc_filtrado.columns:
+        df_proc_filtrado['ultima_atualizaçao'] = pd.to_datetime(df_proc_filtrado['ultima_atualizaçao'], errors='coerce')
 
-    if not df_proc_raw.empty:
-        figs_j = fig_justica(df_proc_raw)
+    if not df_proc_filtrado.empty:
+        figs_j = fig_justica(df_proc_filtrado)
         
         cols = st.columns(2, gap="large")
         
@@ -1311,8 +1563,8 @@ with tabs[2]:
         st.divider()
         st.markdown("### 📊 Dados Completos")
         st.markdown("**Dados brutos dos processos judiciais:**")
-        if not df_proc_raw.empty:
-            st.dataframe(df_proc_raw, use_container_width=True, hide_index=True)
+        if not df_proc_filtrado.empty:
+            st.dataframe(df_proc_filtrado, use_container_width=True, hide_index=True)
         else:
             st.info("Nenhum dado de processos judiciais disponível.")
     else:
@@ -1347,10 +1599,24 @@ with tabs[3]:
     
     anos_disponiveis, df_base = inicializar_dados()
     
-    if df_base is not None and not df_base.empty and not gdf_cnuc_raw.empty:
+    df_base_filtrado = df_base.copy() if df_base is not None else None
+    
+    if df_base is not None and not df_base.empty:
+        if 'Estado' in df_base.columns:
+            estados_queimadas = df_base['Estado'].apply(normalizar_estado).dropna().unique()
+            if len(estados_queimadas) > 0:
+                estados_queimadas_lista = sorted(estados_queimadas.tolist())
+                
+                st.markdown("### Filtros")
+                estado_queimadas = st.selectbox('Filtrar por Estado:', estados_queimadas_lista, index=0, key="filtro_estado_queimadas")
+                
+                df_base_filtrado = df_base[df_base['Estado'].apply(normalizar_estado) == estado_queimadas].copy()
+                anos_disponiveis, _ = inicializar_dados()
+    
+    if df_base_filtrado is not None and not df_base_filtrado.empty and not gdf_cnuc_raw.empty:
         try:
             from shapely.geometry import Point
-            df_valid = df_base.dropna(subset=['Latitude', 'Longitude']).copy()
+            df_valid = df_base_filtrado.dropna(subset=['Latitude', 'Longitude']).copy()
             if not df_valid.empty:
                 geometry = [Point(lon, lat) for lon, lat in zip(df_valid['Longitude'], df_valid['Latitude'])]
                 gdf_focos = gpd.GeoDataFrame(df_valid, geometry=geometry, crs="EPSG:4326")
@@ -1359,7 +1625,7 @@ with tabs[3]:
                 gdf_cnuc_proj = gdf_cnuc_raw.to_crs(crs_proj)
                 focos_in_ucs = gpd.sjoin(gdf_focos_proj, gdf_cnuc_proj, how="inner", predicate="intersects")
                 
-                total_focos_geral = len(df_base)
+                total_focos_geral = len(df_base_filtrado)
                 focos_em_ucs = len(focos_in_ucs) if not focos_in_ucs.empty else 0
                 percentual_ucs = (focos_em_ucs / total_focos_geral * 100) if total_focos_geral > 0 else 0
                 
@@ -1432,7 +1698,7 @@ with tabs[3]:
     
     st.divider()
 
-    if df_base is not None and not df_base.empty:
+    if df_base_filtrado is not None and not df_base_filtrado.empty:
         ano_sel_graf = st.selectbox(
             'Período para gráficos:',
             anos_disponiveis,
@@ -1440,7 +1706,7 @@ with tabs[3]:
             key="ano_focos_calor_global_tab3"
         )
         
-        df_graf = obter_dados_ano(ano_sel_graf, df_base)
+        df_graf = obter_dados_ano(ano_sel_graf, df_base_filtrado)
         
         ano_param = None if ano_sel_graf == "Todos os Anos" else int(ano_sel_graf)
         display_graf = ("todo o período histórico" if ano_param is None else f"o ano de {ano_param}")
@@ -1497,7 +1763,7 @@ with tabs[3]:
 
         st.subheader(f"Ranking por {tema_rank} ({periodo_rank})")
         
-        df_rank_data = obter_dados_ano(ano_sel_rank, df_base)
+        df_rank_data = obter_dados_ano(ano_sel_rank, df_base_filtrado)
         
         if df_rank_data is not None and not df_rank_data.empty:
             from processadores.processador_ranking import ProcessadorRanking
@@ -1514,8 +1780,8 @@ with tabs[3]:
         st.divider()
         st.markdown("### 📊 Dados Completos")
         st.markdown("**Dados brutos de focos de calor:**")
-        if df_base is not None and not df_base.empty:
-            st.dataframe(df_base, use_container_width=True)
+        if df_base_filtrado is not None and not df_base_filtrado.empty:
+            st.dataframe(df_base_filtrado, use_container_width=True)
         else:
             st.info("Nenhum dado de focos de calor disponível.")
             
@@ -1540,65 +1806,98 @@ with tabs[4]:
             unsafe_allow_html=True
         )
 
-    st.write("**Filtro Global:**")
-    anos_disponiveis = obter_anos_disponiveis_desmatamento(gdf_alertas_raw)
-    ano_global_selecionado = st.selectbox('Ano de Detecção:', anos_disponiveis, key="filtro_ano_global")
-    gdf_alertas_filtrado = processar_dados_desmatamento(gdf_alertas_raw, ano_global_selecionado)
+    st.write("**Filtros Globais:**")
+    col_f1, col_f2 = st.columns(2)
+    
+    with col_f1:
+        if 'ESTADO' in gdf_alertas_raw.columns:
+            # A coluna ESTADO já foi normalizada durante o carregamento, não precisa normalizar novamente
+            estados_desmat = gdf_alertas_raw['ESTADO'].dropna().unique()
+            estados_desmat_lista = sorted(estados_desmat.tolist())
+            if not estados_desmat_lista:
+                estados_desmat_lista = ['Pará']
+            estado_desmat = st.selectbox('Filtrar por Estado:', estados_desmat_lista, index=0, key="filtro_estado_desmat")
+        else:
+            estado_desmat = 'Pará'
+    
+    with col_f2:
+        anos_disponiveis = obter_anos_disponiveis_desmatamento(gdf_alertas_raw)
+        ano_global_selecionado = st.selectbox('Ano de Detecção:', anos_disponiveis, key="filtro_ano_global")
+    
+    # Filtrar alertas por estado selecionado
+    gdf_alertas_temp = gdf_alertas_raw.copy()
+    if 'ESTADO' in gdf_alertas_temp.columns:
+        gdf_alertas_temp = gdf_alertas_temp[gdf_alertas_temp['ESTADO'] == estado_desmat].copy()
+    
+    # Processar dados de desmatamento (filtrar por ano)
+    gdf_alertas_filtrado = processar_dados_desmatamento(gdf_alertas_temp, ano_global_selecionado)
 
     st.divider()
 
     col_charts, col_map = st.columns([2, 3], gap="large")
 
     with col_charts:
-        if not gdf_cnuc_raw.empty and not gdf_alertas_filtrado.empty:
-            dados_uc_desmatamento = processar_intersecao_uc_desmatamento(gdf_cnuc_raw, gdf_alertas_filtrado)
+        if not gdf_cnuc_combinado.empty and not gdf_alertas_filtrado.empty:
+            # Filtrar UCs/T.I.s do estado selecionado
+            gdf_cnuc_estado = gdf_cnuc_combinado.copy()
+            if 'ESTADO' in gdf_cnuc_estado.columns:
+                gdf_cnuc_estado = gdf_cnuc_estado[gdf_cnuc_estado['ESTADO'] == estado_desmat]
             
-            if not dados_uc_desmatamento.empty:
-                dados_uc_desmatamento['uc_wrap'] = dados_uc_desmatamento['nome_uc'].apply(lambda x: wrap_label(x, 15))
-                
-                fig_desmat_uc = px.bar(
-                    dados_uc_desmatamento,
-                    x='uc_wrap',
-                    y='alerta_ha_total',
-                    labels={"alerta_ha_total":"Área de Alertas (ha)","uc_wrap":"UC"},
-                    text_auto=True,
-                )
-                
-                alerta_text = [formatar_numero_com_pontos(val, 0) for val in dados_uc_desmatamento['alerta_ha_total']]
-                
-                fig_desmat_uc.update_traces(
-                    customdata=np.stack([alerta_text, dados_uc_desmatamento.nome_uc], axis=-1),
-                    hovertemplate=(
-                        "<b>%{customdata[1]}</b><br>"
-                        "Área de Alertas: %{customdata[0]} ha<extra></extra>" 
-                    ),
-                    text=alerta_text, 
-                    textposition="outside", 
-                    marker_line_color="rgb(80,80,80)",
-                    marker_line_width=0.5,
-                    cliponaxis=False
-                )
-                
-                fig_desmat_uc = aplicar_layout(fig_desmat_uc, titulo="Área de Alertas (Desmatamento) por UC", tamanho_titulo=16)
-                fig_desmat_uc.update_layout(height=400)
-                st.subheader("Área de Alertas por UC")
-                st.plotly_chart(fig_desmat_uc, use_container_width=True, config={'displayModeBar': True}, key="desmat_uc_chart")
-                st.caption("Figura 6.1: Área total de alertas de desmatamento por unidade de conservação.")
-                with st.expander("Detalhes e Fonte da Figura 6.1"):
-                    st.write("""
-                    **Interpretação:**
-                    O gráfico mostra a área total (em hectares) de alertas de desmatamento detectados dentro de cada unidade de conservação.
-
-                    **Observações:**
-                    - Barras representam a área total de alertas em hectares por UC.
-                    - Ordenado por área de alertas em ordem decrescente.
-
-                    **Fonte:** MapBiomas Alerta. *Plataforma de Dados de Alertas de Desmatamento*. Disponível em: https://alerta.mapbiomas.org/. Acesso em: maio de 2025.
-                    """)
+            # Validar se existem UCs/T.I.s após filtro
+            if gdf_cnuc_estado.empty:
+                st.info(f"Nenhuma UC ou T.I. encontrada para o estado {estado_desmat}.")
             else:
-                st.info("Nenhum alerta de desmatamento encontrado sobrepondo as Unidades de Conservação para o período selecionado.")
+                dados_uc_desmatamento = processar_intersecao_uc_desmatamento(gdf_cnuc_estado, gdf_alertas_filtrado)
+            
+                if not dados_uc_desmatamento.empty:
+                    # Ordenar por área de alertas decrescente
+                    dados_uc_desmatamento = dados_uc_desmatamento.sort_values('alerta_ha_total', ascending=False)
+                    dados_uc_desmatamento['uc_wrap'] = dados_uc_desmatamento['nome_uc'].apply(lambda x: wrap_label(x, 15))
+                    
+                    fig_desmat_uc = px.bar(
+                        dados_uc_desmatamento,
+                        x='uc_wrap',
+                        y='alerta_ha_total',
+                        labels={"alerta_ha_total":"Área de Alertas (ha)","uc_wrap":"UC"},
+                        text_auto=True,
+                    )
+                    
+                    alerta_text = [formatar_numero_com_pontos(val, 0) for val in dados_uc_desmatamento['alerta_ha_total']]
+                    
+                    fig_desmat_uc.update_traces(
+                        customdata=np.stack([alerta_text, dados_uc_desmatamento.nome_uc], axis=-1),
+                        hovertemplate=(
+                            "<b>%{customdata[1]}</b><br>"
+                            "Área de Alertas: %{customdata[0]} ha<extra></extra>" 
+                        ),
+                        text=alerta_text, 
+                        textposition="outside", 
+                        marker_line_color="rgb(80,80,80)",
+                        marker_line_width=0.5,
+                        cliponaxis=False
+                    )
+                    
+                    fig_desmat_uc = aplicar_layout(fig_desmat_uc, titulo="Área de Alertas (Desmatamento) por UC/T.I", tamanho_titulo=16)
+                    fig_desmat_uc.update_layout(height=400)
+                    st.subheader("Área de Alertas por UC/T.I")
+                    st.plotly_chart(fig_desmat_uc, use_container_width=True, config={'displayModeBar': True}, key="desmat_uc_chart")
+                    st.caption("Figura 6.1: Área total de alertas de desmatamento por unidade de conservação e terra indígena.")
+                    with st.expander("Detalhes e Fonte da Figura 6.1"):
+                        st.write("""
+                        **Interpretação:**
+                        O gráfico mostra a área total (em hectares) de alertas de desmatamento detectados dentro de cada unidade de conservação (UC) e terra indígena (T.I).
+
+                        **Observações:**
+                        - Barras representam a área total de alertas em hectares por UC ou T.I.
+                        - Ordenado por área de alertas em ordem decrescente.
+                        - Inclui tanto UCs quanto T.I.s do estado selecionado.
+
+                        **Fonte:** MapBiomas Alerta. *Plataforma de Dados de Alertas de Desmatamento*. Disponível em: https://alerta.mapbiomas.org/. Acesso em: maio de 2025.
+                        """)
+                else:
+                    st.info("Nenhum alerta de desmatamento encontrado sobrepondo as Unidades de Conservação ou Terras Indígenas para o período selecionado.")
         else:
-            st.warning("Dados de Unidades de Conservação ou Alertas de Desmatamento não disponíveis para esta análise.")
+            st.warning("Dados de Unidades de Conservação/Terras Indígenas ou Alertas de Desmatamento não disponíveis para esta análise.")
 
         st.divider()
 
@@ -1678,8 +1977,8 @@ with tabs[4]:
 
     st.divider()
 
-    if not gdf_alertas_raw.empty:
-        dados_temporais = preprocessar_dados_desmatamento_temporal(gdf_alertas_raw)
+    if not gdf_alertas_temp.empty:
+        dados_temporais = preprocessar_dados_desmatamento_temporal(gdf_alertas_temp)
         if not dados_temporais.empty:
             fig_desmat_temp = fig_desmatamento_temporal(dados_temporais)
             if fig_desmat_temp and fig_desmat_temp.data:
@@ -1707,11 +2006,9 @@ with tabs[4]:
     st.divider()
     st.markdown("### 📊 Dados Completos")
     st.markdown("**Dados brutos de alertas de desmatamento:**")
-    if not gdf_alertas_raw.empty:
-        df_alertas_display = gdf_alertas_raw.drop(columns=['geometry']) if 'geometry' in gdf_alertas_raw.columns else gdf_alertas_raw
+    if not gdf_alertas_filtrado.empty:
+        df_alertas_display = gdf_alertas_filtrado.drop(columns=['geometry']) if 'geometry' in gdf_alertas_filtrado.columns else gdf_alertas_filtrado
         st.dataframe(df_alertas_display, use_container_width=True, hide_index=True)
     else:
-        st.info("Nenhum dado de alertas de desmatamento disponível.")
+        st.info("Nenhum dado de alertas de desmatamento disponível para o estado e ano selecionados.")
 
-st.markdown("---")
-st.markdown("**Dashboard Modular** | Desenvolvido com Streamlit | Dados: INPE, MMA, CPT, TJ-PA")

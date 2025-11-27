@@ -141,32 +141,76 @@ def render_cards(perc_alerta, perc_sigef, total_unidades, contagem_alerta, conta
 
 def mostrar_tabela_unificada(gdf_alertas, gdf_sigef, gdf_cnuc):
     try:
-        municipios = []
-        alertas_area = []
-        cnuc_area = []
-        if not gdf_alertas.empty and 'MUNICIPIO' in gdf_alertas.columns:
-            for municipio in gdf_alertas['MUNICIPIO'].unique():
-                if pd.notna(municipio):
-                    municipios.append(municipio)
-                    
-                    area_alerta = gdf_alertas[gdf_alertas['MUNICIPIO'] == municipio]['AREAHA'].sum() if 'AREAHA' in gdf_alertas.columns else 0
-                    alertas_area.append(area_alerta)
-                    
-                    area_cnuc = 0
-                    if not gdf_cnuc.empty and 'municipio' in gdf_cnuc.columns:
-                        cnuc_mun = gdf_cnuc[gdf_cnuc['municipio'].str.contains(municipio, na=False)]
-                        area_cnuc = cnuc_mun['ha_total'].sum() if 'ha_total' in cnuc_mun.columns else 0
-                    cnuc_area.append(area_cnuc)
+        if gdf_cnuc.empty:
+            st.info("Nenhum dado de UC disponível para tabela unificada")
+            return
         
-        if municipios:
-            df_tabela = pd.DataFrame({
-                'Município': municipios,
-                'Alertas (ha)': alertas_area,
-                'CNUC (ha)': cnuc_area
-            })
+        # Preparar dados por UC
+        dados_tabela = []
+        
+        for idx, uc in gdf_cnuc.iterrows():
+            nome_uc = uc.get('nome_uc', 'N/A')
+            area_uc_ha = uc.get('area_ha', 0) if 'area_ha' in gdf_cnuc.columns else uc.get('ha_total', 0)
             
-            df_tabela['Alertas (ha)'] = df_tabela['Alertas (ha)'].apply(lambda x: f"{x:,.1f}".replace(',', '.'))
-            df_tabela['CNUC (ha)'] = df_tabela['CNUC (ha)'].apply(lambda x: f"{x:,.1f}".replace(',', '.'))
+            # Sobreposição com Alertas
+            area_alertas_ha = 0
+            qtd_alertas = 0
+            if not gdf_alertas.empty and uc.geometry is not None:
+                try:
+                    alertas_proj = gdf_alertas.to_crs(epsg=31983)
+                    uc_geom = gpd.GeoSeries([uc.geometry], crs=gdf_cnuc.crs).to_crs(epsg=31983).iloc[0]
+                    alertas_intersect = alertas_proj[alertas_proj.intersects(uc_geom)]
+                    if not alertas_intersect.empty:
+                        intersecao = gpd.overlay(
+                            gpd.GeoDataFrame([{'geometry': uc_geom}], crs='EPSG:31983'),
+                            alertas_intersect,
+                            how='intersection'
+                        )
+                        area_alertas_ha = intersecao.geometry.area.sum() / 10000
+                        qtd_alertas = len(alertas_intersect)
+                except:
+                    area_alertas_ha = uc.get('alerta_ha', 0)
+                    qtd_alertas = uc.get('c_alertas', 0)
+            
+            # Sobreposição com CAR
+            area_car_ha = 0
+            qtd_car = 0
+            if not gdf_sigef.empty and uc.geometry is not None:
+                try:
+                    sigef_proj = gdf_sigef.to_crs(epsg=31983)
+                    uc_geom = gpd.GeoSeries([uc.geometry], crs=gdf_cnuc.crs).to_crs(epsg=31983).iloc[0]
+                    sigef_intersect = sigef_proj[sigef_proj.intersects(uc_geom)]
+                    if not sigef_intersect.empty:
+                        intersecao_car = gpd.overlay(
+                            gpd.GeoDataFrame([{'geometry': uc_geom}], crs='EPSG:31983'),
+                            sigef_intersect,
+                            how='intersection'
+                        )
+                        area_car_ha = intersecao_car.geometry.area.sum() / 10000
+                        qtd_car = len(sigef_intersect)
+                except:
+                    area_car_ha = uc.get('sigef_ha', 0)
+                    qtd_car = uc.get('c_sigef', 0)
+            
+            dados_tabela.append({
+                'UC': nome_uc,
+                'Área UC (ha)': area_uc_ha,
+                'Alertas (ha)': area_alertas_ha,
+                'Qtd Alertas': qtd_alertas,
+                'CAR (ha)': area_car_ha,
+                'Qtd CAR': qtd_car
+            })
+        
+        if dados_tabela:
+            df_tabela = pd.DataFrame(dados_tabela)
+            
+            # Ordenar por área de UC decrescente
+            df_tabela = df_tabela.sort_values('Área UC (ha)', ascending=False)
+            
+            # Formatar números
+            df_tabela['Área UC (ha)'] = df_tabela['Área UC (ha)'].apply(lambda x: f"{x:,.1f}".replace(',', 'X').replace('.', ',').replace('X', '.'))
+            df_tabela['Alertas (ha)'] = df_tabela['Alertas (ha)'].apply(lambda x: f"{x:,.1f}".replace(',', 'X').replace('.', ',').replace('X', '.'))
+            df_tabela['CAR (ha)'] = df_tabela['CAR (ha)'].apply(lambda x: f"{x:,.1f}".replace(',', 'X').replace('.', ',').replace('X', '.'))
             
             st.dataframe(df_tabela, use_container_width=True, hide_index=True)
         else:

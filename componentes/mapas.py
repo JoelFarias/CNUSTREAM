@@ -41,9 +41,14 @@ def criar_figura(gdf_cnuc_filtered, gdf_sigef_filtered, df_csv_filtered, centro,
             if invadindo_opcao.lower() == "todos":
                 sigef_plot = gdf_sigef_filtered
             else:
-                sigef_plot = gdf_sigef_filtered[
-                    gdf_sigef_filtered["invadindo"].str.strip().str.lower() == invadindo_opcao.lower()
-                ]
+                # Filtrar por coluna invadindo se existir
+                if 'invadindo' in gdf_sigef_filtered.columns:
+                    sigef_plot = gdf_sigef_filtered[
+                        gdf_sigef_filtered["invadindo"].str.strip().str.lower() == invadindo_opcao.lower()
+                    ]
+                else:
+                    # Se não tem coluna invadindo, usar todos os dados (já estão filtrados)
+                    sigef_plot = gdf_sigef_filtered
             
             if not sigef_plot.empty:
                 fig_sigef = px.choropleth_map(
