@@ -5,12 +5,13 @@ import geopandas as gpd
 import streamlit as st
 from sqlalchemy import create_engine
 
-# Configuração PostgreSQL para CAR
+# Configuração PostgreSQL para CAR e Alertas
+# Usar pooler IPv6 para compatibilidade com Streamlit Cloud
 DB_CONFIG = {
     'host': 'db.rjnzsfvxqvygkyusmsan.supabase.co',
-    'port': 5432,
+    'port': 6543,  # Porta do pooler (transaction mode)
     'database': 'postgres',
-    'user': 'postgres',
+    'user': 'postgres.rjnzsfvxqvygkyusmsan',  # Formato com projeto
     'password': 'jB5kgYN6DZF6pdRm'
 }
 
